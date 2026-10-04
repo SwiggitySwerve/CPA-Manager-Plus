@@ -9698,6 +9698,7 @@ export function AccountsPage() {
                       kind: 'quota',
                       onOpen: () => void openAccountDetail(row, 'quota'),
                       children: (
+                        <>
                         <span className={styles.quotaWindowGrid} title={ctx.quotaWindowTitle}>
                         {ctx.mainListWindows.length > 0 ? (
                           ctx.mainListWindows.map((window, windowIndex) =>
@@ -9715,8 +9716,11 @@ export function AccountsPage() {
                             {ctx.quotaEmptyLabel}
                           </span>
                         )}
-                        {renderCreditsLine(row)}
                       </span>
+                        {/* Outside the grid: a lone quota window must stay its only child
+                            so it spans the full cell width. */}
+                        {renderCreditsLine(row)}
+                        </>
                       ),
                     });
                   })()}
