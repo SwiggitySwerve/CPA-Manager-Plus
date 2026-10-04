@@ -433,6 +433,8 @@ const normalizeBooleanValue = (value: unknown): boolean | null => {
   return null;
 };
 
+const firstOfRange = (value: unknown): unknown => (Array.isArray(value) ? value[0] : value);
+
 const resolveCodexCreditsInfo = (payload: CodexUsagePayload) => {
   const credits = payload.credits;
   return {
@@ -442,11 +444,12 @@ const resolveCodexCreditsInfo = (payload: CodexUsagePayload) => {
     creditsOverageLimitReached: normalizeBooleanValue(
       credits?.overage_limit_reached ?? credits?.overageLimitReached
     ),
+    // Reported as a [low, high] range; keep the conservative low bound.
     creditsApproxLocalMessages: normalizeNumberValue(
-      credits?.approx_local_messages ?? credits?.approxLocalMessages
+      firstOfRange(credits?.approx_local_messages ?? credits?.approxLocalMessages)
     ),
     creditsApproxCloudMessages: normalizeNumberValue(
-      credits?.approx_cloud_messages ?? credits?.approxCloudMessages
+      firstOfRange(credits?.approx_cloud_messages ?? credits?.approxCloudMessages)
     ),
   };
 };
@@ -1031,7 +1034,12 @@ const buildClaudeQuotaWindows = (
     const window = payload[key as keyof ClaudeUsagePayload];
     let renderedTopLevelWindow = false;
     if (window && typeof window === 'object' && 'utilization' in window) {
-      const typedWindow = window as { utilization: number; resets_at: string };
+      const typedWindow = window as {
+        utilization: number;
+        resets_at: string;
+        limit_dollars?: unknown;
+        used_dollars?: unknown;
+      };
       const usedPercent = normalizeNumberValue(typedWindow.utilization);
       const reset = resolveAbsoluteQuotaReset(typedWindow.resets_at);
       const resetLabel = formatQuotaResetTime(typedWindow.resets_at);
@@ -1046,6 +1054,8 @@ const buildClaudeQuotaWindows = (
           resetAccuracy: reset.resetAccuracy,
           limitWindowSeconds: id === 'five-hour' ? 5 * 60 * 60 : 7 * 24 * 60 * 60,
           modelScope: { kind: 'all', complete: true },
+          limitUsd: normalizeNumberValue(typedWindow.limit_dollars),
+          usedUsd: normalizeNumberValue(typedWindow.used_dollars),
         });
         renderedTopLevelWindow = true;
       }
