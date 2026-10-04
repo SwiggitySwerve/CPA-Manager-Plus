@@ -407,9 +407,12 @@
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0;
-  text-overflow: ellipsis;
   text-transform: none;
-  white-space: nowrap;
+  // Wrap to a second line rather than truncating ("Estimated Cost", "Input Tokens").
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.25;
 }
 
 .usageSummaryCardBody {
@@ -2580,10 +2583,15 @@
   }
 }
 
-@media (max-width: 1400px) {
+// Same breakpoint as the Request Monitor summary cards: eight across only on wide
+// screens, 4 x 2 below that, so labels like "Success Rate" are never cut off.
+@media (max-width: 1680px) {
   .usageSummaryGrid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+}
+
+@media (max-width: 1400px) {
 
   .entityIdentityGrid,
   .credentialIdentityGrid {
