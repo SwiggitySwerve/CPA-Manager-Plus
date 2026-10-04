@@ -7859,3 +7859,29 @@
   font-weight: 600;
   line-height: 1;
 }
+
+// Credits line under the quota meters (Codex accounts).
+.quotaCreditsLine {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accounts-muted);
+
+  strong {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 750;
+  }
+}
+
+.quotaCreditsLabel {
+  font-weight: 600;
+}
+
+.quotaCreditsMeta {
+  color: var(--accounts-muted);
+}

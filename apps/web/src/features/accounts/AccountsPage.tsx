@@ -8538,6 +8538,29 @@ export function AccountsPage() {
     );
   };
 
+  // ChatGPT credits pay for usage once the plan quota is exhausted; shown under the
+  // quota meters so a draining balance is visible without opening the drawer.
+  const renderCreditsLine = (row: AccountRow) => {
+    const balance = Number.parseFloat(String(row.quota.creditsBalance ?? ''));
+    if (!Number.isFinite(balance) && row.quota.creditsUnlimited !== true) return null;
+    const messages = row.quota.creditsApproxLocalMessages;
+    return (
+      <span className={styles.quotaCreditsLine} data-account-credits="true">
+        <span className={styles.quotaCreditsLabel}>{t('accounts.credits_short')}</span>
+        <strong>
+          {row.quota.creditsUnlimited === true
+            ? t('accounts.detail_credits_unlimited')
+            : formatCompactNumber(balance)}
+        </strong>
+        {messages != null ? (
+          <span className={styles.quotaCreditsMeta}>
+            {t('accounts.credits_approx_messages', { count: formatCompactNumber(messages) })}
+          </span>
+        ) : null}
+      </span>
+    );
+  };
+
   const renderPagination = () => (
     <div className={styles.accountsPagination}>
       <PaginationControls
@@ -9692,6 +9715,7 @@ export function AccountsPage() {
                             {ctx.quotaEmptyLabel}
                           </span>
                         )}
+                        {renderCreditsLine(row)}
                       </span>
                       ),
                     });
