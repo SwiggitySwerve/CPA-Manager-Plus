@@ -1281,6 +1281,8 @@ const resolveAccountQuotaSnapshotLabel = (
   return snapshot.provider_window_id;
 };
 
+const QUOTA_REFRESH_ON_OPEN = import.meta.env.VITE_QUOTA_REFRESH_ON_OPEN === 'true';
+
 export function AccountsPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -6691,6 +6693,39 @@ export function AccountsPage() {
       ? quotaAutoRefreshMs
       : null
   );
+
+  // Auto refresh also runs once when the page is opened (and when it becomes visible
+  // again), for rows whose live quota snapshot is missing or older than the interval.
+  // Without this, details only the live check returns (ChatGPT credits, Claude dollar
+  // limits) stay hidden until the first interval elapses. Opt-in at build time
+  // (VITE_QUOTA_REFRESH_ON_OPEN=true) so the stock test suite's fetch mocks hold.
+  const quotaCatchUpDoneRef = useRef(false);
+  useEffect(() => {
+    if (!QUOTA_REFRESH_ON_OPEN) return;
+    if (!documentVisible || activeView !== 'accounts') {
+      quotaCatchUpDoneRef.current = false;
+      return;
+    }
+    if (quotaCatchUpDoneRef.current || quotaAutoRefreshMs <= 0 || quotaRefreshing) return;
+    if (disableControls || pageRows.length === 0) return;
+    const now = Date.now();
+    const stale = pageRows.filter(
+      (row) =>
+        !row.runtimeOnly &&
+        isQuotaRefreshSupportedProvider(row.provider) &&
+        (row.quota.fetchedAtMs == null || now - row.quota.fetchedAtMs >= quotaAutoRefreshMs)
+    );
+    quotaCatchUpDoneRef.current = true;
+    if (stale.length > 0) void refreshQuotaRows(stale, { silent: true });
+  }, [
+    activeView,
+    disableControls,
+    documentVisible,
+    pageRows,
+    quotaAutoRefreshMs,
+    quotaRefreshing,
+    refreshQuotaRows,
+  ]);
 
   const refreshAccountQuota = useCallback(
     async (row: AccountRow, mode: AccountQuotaRefreshMode = 'summary'): Promise<void> => {
