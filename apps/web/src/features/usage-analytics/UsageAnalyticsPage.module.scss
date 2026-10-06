@@ -114,6 +114,13 @@
   border-left: 0;
 }
 
+.segmentButton:disabled,
+.segmentButton:disabled:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--usage-muted) 45%, transparent);
+  cursor: not-allowed;
+}
+
 .segmentButton:hover {
   color: var(--usage-text);
   background: color-mix(in srgb, var(--usage-primary) 5%, var(--usage-surface));
