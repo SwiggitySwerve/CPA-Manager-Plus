@@ -1,4 +1,12 @@
-import { useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -2811,6 +2819,12 @@ function UsageAnalyticsPageInner() {
                   ? t('usage_analytics.hide_advanced_filters')
                   : t('usage_analytics.show_advanced_filters')}
               </button>
+              {usage.nextRefreshAtMs !== null ? (
+                <AutoRefreshCountdown
+                  nextRefreshAtMs={usage.nextRefreshAtMs}
+                  loading={usage.loading}
+                />
+              ) : null}
               <Button
                 variant="secondary"
                 size="sm"
@@ -3964,6 +3978,30 @@ function DetailPanel({
     </div>
   );
 }
+
+const AutoRefreshCountdown = ({
+  nextRefreshAtMs,
+  loading,
+}: {
+  nextRefreshAtMs: number;
+  loading: boolean;
+}) => {
+  const { t } = useTranslation();
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [nextRefreshAtMs]);
+  const seconds = Math.max(0, Math.ceil((nextRefreshAtMs - nowMs) / 1000));
+  return (
+    <span className={styles.filterMeta} role="timer" aria-live="off">
+      {loading || seconds === 0
+        ? t('usage_analytics.auto_refresh_updating')
+        : t('usage_analytics.auto_refresh_in', { seconds })}
+    </span>
+  );
+};
 
 export function UsageAnalyticsPage() {
   return <UsageAnalyticsPageInner />;

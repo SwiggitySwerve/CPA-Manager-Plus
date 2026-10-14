@@ -4632,6 +4632,8 @@
     "filter_request_id": "ID запроса",
     "not_available_yet": "Пока недоступно",
     "clear_all": "Очистить все",
+    "auto_refresh_in": "Обновление через {{seconds}} с",
+    "auto_refresh_updating": "Обновление…",
     "error_title": "Не удалось загрузить аналитику",
     "empty_title": "Нет данных",
     "empty_body": "Для выбранного периода и фильтров записи использования не найдены.",

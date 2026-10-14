@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
@@ -111,6 +111,7 @@ export function useUsageAnalytics() {
     () => initialUiState.activeTab
   );
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nextRefreshAtMs, setNextRefreshAtMs] = useState(() => Date.now() + USAGE_AUTO_REFRESH_MS);
   const [selectedBucketMs, setSelectedBucketMs] = useState<number | null>(null);
   const [selectedModelId, setSelectedModelId] = useState('');
   const [selectedApiKeyHash, setSelectedApiKeyHash] = useState('');
@@ -217,6 +218,19 @@ export function useUsageAnalytics() {
   );
 
   const bounds = useMemo(() => getUsageRangeBounds(filters, nowMs), [filters, nowMs]);
+  const liveRange = filters.timeRange !== 'custom' && filters.timeRange !== 'yesterday';
+  // Identity of the queried range for data scoping. A live range's moving edges must not
+  // be part of it, or every refresh would look like a new scope and blank the page.
+  const scopeBounds = useMemo(
+    () =>
+      liveRange
+        ? {
+            timeRange: filters.timeRange,
+            dayStartMs: filters.timeRange === 'today' ? bounds?.fromMs : undefined,
+          }
+        : bounds,
+    [bounds, filters.timeRange, liveRange]
+  );
   const heatmapRangeContext = useMemo(
     () => buildUsageHeatmapRangeContext(bounds, 'en-US', browserTimeZone),
     [bounds, browserTimeZone]
@@ -272,7 +286,7 @@ export function useUsageAnalytics() {
     () =>
       JSON.stringify({
         activeTab: activeTabState,
-        bounds,
+        scopeBounds,
         drilldownPreview,
         filters: analyticsFilters,
         granularity: resolvedGranularity,
@@ -281,7 +295,7 @@ export function useUsageAnalytics() {
     [
       activeTabState,
       analyticsFilters,
-      bounds,
+      scopeBounds,
       debouncedSearchQuery,
       drilldownPreview,
       resolvedGranularity,
@@ -303,10 +317,10 @@ export function useUsageAnalytics() {
   const filterSelectorsDataScopeKey = useMemo(
     () =>
       JSON.stringify({
-        bounds,
+        scopeBounds,
         searchQuery: debouncedSearchQuery,
       }),
-    [bounds, debouncedSearchQuery]
+    [scopeBounds, debouncedSearchQuery]
   );
   const filterSelectorsAnalytics = useMonitoringAnalytics({
     fromMs: bounds?.fromMs,
@@ -332,7 +346,6 @@ export function useUsageAnalytics() {
           ? {
               fromMs: selectedHeatmapDate.fromMs,
               key: selectedHeatmapDate.key,
-              toMs: selectedHeatmapDate.toMs,
             }
           : null,
         filters: analyticsFilters,
@@ -404,7 +417,7 @@ export function useUsageAnalytics() {
       JSON.stringify({
         activeTab: activeTabState,
         apiKeyHashes: apiKeyTrendHashes,
-        bounds,
+        scopeBounds,
         filters: apiKeyTrendFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -413,7 +426,7 @@ export function useUsageAnalytics() {
       activeTabState,
       apiKeyTrendFilters,
       apiKeyTrendHashes,
-      bounds,
+      scopeBounds,
       debouncedSearchQuery,
       resolvedGranularity,
     ]
@@ -535,7 +548,7 @@ export function useUsageAnalytics() {
     () =>
       JSON.stringify({
         activeTab: activeTabState,
-        bounds,
+        scopeBounds,
         filters: selectedApiKeyTimelineFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -543,7 +556,7 @@ export function useUsageAnalytics() {
       }),
     [
       activeTabState,
-      bounds,
+      scopeBounds,
       debouncedSearchQuery,
       resolvedGranularity,
       selectedApiKeyFilterHash,
@@ -590,7 +603,7 @@ export function useUsageAnalytics() {
     () =>
       JSON.stringify({
         activeTab: activeTabState,
-        bounds,
+        scopeBounds,
         filters: selectedCredentialTimelineFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -598,7 +611,7 @@ export function useUsageAnalytics() {
       }),
     [
       activeTabState,
-      bounds,
+      scopeBounds,
       debouncedSearchQuery,
       resolvedGranularity,
       selectedCredentialFilterID,
@@ -748,8 +761,11 @@ export function useUsageAnalytics() {
     setSelectedApiKeyHash(getSelectableApiKeyHash(hash));
   }, []);
 
-  const refreshAnalytics = useCallback(() => {
+  const refresh = useCallback(() => {
     setNowMs(Date.now());
+    setNextRefreshAtMs(Date.now() + USAGE_AUTO_REFRESH_MS);
+    void loadApiKeyAliases();
+    void loadMonitoringMeta();
     void analytics.refresh({ force: true });
     void filterSelectorsAnalytics.refresh({ force: true });
     if (selectedApiKeyTimelineAnalytics.enabled) {
@@ -769,35 +785,43 @@ export function useUsageAnalytics() {
     apiKeyTrendAnalytics,
     filterSelectorsAnalytics,
     heatmapDateAnalytics,
+    loadApiKeyAliases,
+    loadMonitoringMeta,
     selectedApiKeyTimelineAnalytics,
     selectedCredentialTimelineAnalytics,
     selectedHeatmapDate,
   ]);
 
-  const refresh = useCallback(() => {
-    void loadApiKeyAliases();
-    void loadMonitoringMeta();
-    refreshAnalytics();
-  }, [loadApiKeyAliases, loadMonitoringMeta, refreshAnalytics]);
-
-  // Keep ranges that end at "now" live: poll while the tab is visible, and catch up
-  // immediately when it becomes visible again.
-  const refreshAnalyticsRef = useRef(refreshAnalytics);
-  refreshAnalyticsRef.current = refreshAnalytics;
-  const liveRange = filters.timeRange !== 'custom' && filters.timeRange !== 'yesterday';
+  // Live ranges end at "now". Moving "now" changes each query's request, and every
+  // analytics hook refetches on its own when that happens, so a tick only advances it.
+  const advanceNow = useCallback(() => {
+    const now = Date.now();
+    setNowMs(now);
+    setNextRefreshAtMs(now + USAGE_AUTO_REFRESH_MS);
+  }, []);
+  const autoRefreshActive = liveRange && analytics.enabled;
   useEffect(() => {
-    if (!liveRange || !analytics.enabled) return undefined;
-    const hasDocument = typeof document !== 'undefined';
-    const tick = () => {
-      if (!hasDocument || document.visibilityState === 'visible') refreshAnalyticsRef.current();
+    if (!autoRefreshActive) return undefined;
+    const timer = setTimeout(
+      () => {
+        if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+          advanceNow();
+        } else {
+          setNextRefreshAtMs(Date.now() + USAGE_AUTO_REFRESH_MS);
+        }
+      },
+      Math.max(0, nextRefreshAtMs - Date.now())
+    );
+    return () => clearTimeout(timer);
+  }, [advanceNow, autoRefreshActive, nextRefreshAtMs]);
+  useEffect(() => {
+    if (!autoRefreshActive || typeof document === 'undefined') return undefined;
+    const catchUp = () => {
+      if (document.visibilityState === 'visible') advanceNow();
     };
-    const timer = setInterval(tick, USAGE_AUTO_REFRESH_MS);
-    if (hasDocument) document.addEventListener('visibilitychange', tick);
-    return () => {
-      clearInterval(timer);
-      if (hasDocument) document.removeEventListener('visibilitychange', tick);
-    };
-  }, [liveRange, analytics.enabled]);
+    document.addEventListener('visibilitychange', catchUp);
+    return () => document.removeEventListener('visibilitychange', catchUp);
+  }, [advanceNow, autoRefreshActive]);
 
   return {
     filters,
@@ -815,6 +839,7 @@ export function useUsageAnalytics() {
     unavailableReason: analytics.unavailableReason,
     lastRefreshedAt: analytics.lastRefreshedAt,
     refresh,
+    nextRefreshAtMs: autoRefreshActive ? nextRefreshAtMs : null,
     coverage: adapted.coverage,
     summary: adapted.summary,
     summaryDelta,

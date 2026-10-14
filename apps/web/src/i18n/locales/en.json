@@ -4633,6 +4633,8 @@
     "filter_request_id": "Request ID",
     "not_available_yet": "Not available yet",
     "clear_all": "Clear all",
+    "auto_refresh_in": "Updates in {{seconds}}s",
+    "auto_refresh_updating": "Updating…",
     "error_title": "Failed to load usage analytics",
     "empty_title": "No usage data",
     "empty_body": "No matching usage records were found for the selected range and filters.",

@@ -565,20 +565,27 @@ describe('useUsageAnalytics request orchestration', () => {
       vi.useRealTimers();
     });
 
-    it('re-queries the main analytics every 10 seconds while the range ends at now', async () => {
+    const mainParams = () => lastParams((params) => Boolean(params.include?.summary));
+
+    it('advances now every 10 seconds without changing the data scope', async () => {
       await renderHook();
-      mainRefresh.mockClear();
+      const first = mainParams();
+      expect(latestResult?.nextRefreshAtMs).toBe(Date.now() + 10_000);
 
       await act(async () => {
         vi.advanceTimersByTime(10_000);
       });
-      expect(mainRefresh).toHaveBeenCalledTimes(1);
-      expect(mainRefresh).toHaveBeenCalledWith({ force: true });
+      const second = mainParams();
+      expect(second?.nowMs).toBeGreaterThan(first?.nowMs as number);
+      expect(second?.toMs).toBeGreaterThan(first?.toMs as number);
+      // A moving range end must not look like a new scope, or the page blanks on every poll.
+      expect(second?.dataScopeKey).toBe(first?.dataScopeKey);
+      expect(latestResult?.nextRefreshAtMs).toBe(Date.now() + 10_000);
 
       await act(async () => {
-        vi.advanceTimersByTime(20_000);
+        vi.advanceTimersByTime(10_000);
       });
-      expect(mainRefresh).toHaveBeenCalledTimes(3);
+      expect(mainParams()?.nowMs).toBeGreaterThan(second?.nowMs as number);
     });
 
     it('does not poll fixed ranges', async () => {
@@ -586,12 +593,13 @@ describe('useUsageAnalytics request orchestration', () => {
       await act(async () => {
         latestResult?.setFilters({ timeRange: 'yesterday' });
       });
-      mainRefresh.mockClear();
+      const before = mainParams();
+      expect(latestResult?.nextRefreshAtMs).toBeNull();
 
       await act(async () => {
         vi.advanceTimersByTime(30_000);
       });
-      expect(mainRefresh).not.toHaveBeenCalled();
+      expect(mainParams()?.nowMs).toBe(before?.nowMs);
 
       await act(async () => {
         latestResult?.setFilters({ timeRange: '24h' });

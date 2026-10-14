@@ -4628,6 +4628,8 @@
     "filter_request_id": "請求 ID",
     "not_available_yet": "暫不可用",
     "clear_all": "清空全部",
+    "auto_refresh_in": "{{seconds}} 秒後更新",
+    "auto_refresh_updating": "更新中…",
     "error_title": "用量分析載入失敗",
     "empty_title": "暫無用量資料",
     "empty_body": "目前時間範圍和篩選條件下沒有符合的用量記錄。",
