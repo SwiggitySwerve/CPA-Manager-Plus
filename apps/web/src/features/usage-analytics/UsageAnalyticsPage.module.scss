@@ -174,16 +174,17 @@
   justify-content: center;
   gap: 6px;
   box-sizing: border-box;
-  /* fixed width so 1-2 digit counts and busy/idle never shift neighbouring controls */
-  width: 62px;
-  height: 24px;
+  /* same height, radius and type as .filterActionButton and the Refresh button; fixed
+     width so 1-2 digit counts and busy/idle never shift neighbouring controls */
+  width: 68px;
+  height: 34px;
   flex: none;
   border: 1px solid var(--usage-border);
-  border-radius: 999px;
+  border-radius: 12px;
   background: var(--usage-muted-surface);
   color: var(--usage-muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: default;
