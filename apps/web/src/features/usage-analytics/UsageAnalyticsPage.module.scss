@@ -176,7 +176,7 @@
   box-sizing: border-box;
   /* same height, radius and type as .filterActionButton and the Refresh button; fixed
      width so 1-2 digit counts and busy/idle never shift neighbouring controls */
-  width: 68px;
+  width: 72px;
   height: 34px;
   flex: none;
   border: 1px solid var(--usage-border);
@@ -200,8 +200,9 @@
 }
 
 .refreshBubbleText {
-  min-width: 4ch;
-  text-align: left;
+  /* wide enough for "(10s)" so the dot never moves; centred so "(4s)" isn't left-heavy */
+  min-width: 5ch;
+  text-align: center;
 }
 
 .refreshBubbleBusy .refreshBubbleDot {
