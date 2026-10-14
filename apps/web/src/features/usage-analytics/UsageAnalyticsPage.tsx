@@ -3994,11 +3994,19 @@ const AutoRefreshCountdown = ({
     return () => clearInterval(timer);
   }, [nextRefreshAtMs]);
   const seconds = Math.max(0, Math.ceil((nextRefreshAtMs - nowMs) / 1000));
+  const label = loading
+    ? t('usage_analytics.auto_refresh_updating')
+    : t('usage_analytics.auto_refresh_in', { seconds });
   return (
-    <span className={styles.filterMeta} role="timer" aria-live="off">
-      {loading || seconds === 0
-        ? t('usage_analytics.auto_refresh_updating')
-        : t('usage_analytics.auto_refresh_in', { seconds })}
+    <span
+      className={`${styles.refreshBubble} ${loading ? styles.refreshBubbleBusy : ''}`}
+      role="timer"
+      aria-live="off"
+      title={label}
+      aria-label={label}
+    >
+      <span className={styles.refreshBubbleDot} aria-hidden="true" />
+      <span className={styles.refreshBubbleText}>({seconds}s)</span>
     </span>
   );
 };

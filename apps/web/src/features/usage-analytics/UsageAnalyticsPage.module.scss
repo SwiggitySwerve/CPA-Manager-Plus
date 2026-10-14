@@ -162,11 +162,63 @@
 }
 
 .filterMeta {
-  font-variant-numeric: tabular-nums;
   color: var(--usage-muted);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.refreshBubble {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  /* fixed width so 1-2 digit counts and busy/idle never shift neighbouring controls */
+  width: 62px;
+  height: 24px;
+  flex: none;
+  border: 1px solid var(--usage-border);
+  border-radius: 999px;
+  background: var(--usage-muted-surface);
+  color: var(--usage-muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.refreshBubbleDot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--usage-muted);
+  opacity: 0.6;
+}
+
+.refreshBubbleText {
+  min-width: 4ch;
+  text-align: left;
+}
+
+.refreshBubbleBusy .refreshBubbleDot {
+  background: var(--usage-primary);
+  opacity: 1;
+  animation: refreshBubblePulse 0.9s ease-in-out infinite;
+}
+
+@keyframes refreshBubblePulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refreshBubbleBusy .refreshBubbleDot {
+    animation: none;
+  }
 }
 
 .filterActionButton {
