@@ -556,4 +556,46 @@ describe('useUsageAnalytics request orchestration', () => {
     expect(latestResult?.credentialTrendError).toBe('timeline failed');
     expect(latestResult?.credentialRows).toHaveLength(1);
   });
+  describe('live auto-refresh', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('re-queries the main analytics every 10 seconds while the range ends at now', async () => {
+      await renderHook();
+      mainRefresh.mockClear();
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(mainRefresh).toHaveBeenCalledTimes(1);
+      expect(mainRefresh).toHaveBeenCalledWith({ force: true });
+
+      await act(async () => {
+        vi.advanceTimersByTime(20_000);
+      });
+      expect(mainRefresh).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not poll fixed ranges', async () => {
+      await renderHook();
+      await act(async () => {
+        latestResult?.setFilters({ timeRange: 'yesterday' });
+      });
+      mainRefresh.mockClear();
+
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(mainRefresh).not.toHaveBeenCalled();
+
+      await act(async () => {
+        latestResult?.setFilters({ timeRange: '24h' });
+      });
+    });
+  });
 });

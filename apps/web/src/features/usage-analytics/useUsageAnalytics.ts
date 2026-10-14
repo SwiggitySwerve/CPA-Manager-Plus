@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
@@ -63,6 +63,7 @@ import {
 } from './usageAnalyticsUiState';
 
 const USAGE_SEARCH_DEBOUNCE_MS = 350;
+const USAGE_AUTO_REFRESH_MS = 10_000;
 const USAGE_HEATMAP_ALL_DATES_KEY = 'all';
 const API_KEY_TREND_SERIES_LIMIT = 4;
 
@@ -747,10 +748,8 @@ export function useUsageAnalytics() {
     setSelectedApiKeyHash(getSelectableApiKeyHash(hash));
   }, []);
 
-  const refresh = useCallback(() => {
+  const refreshAnalytics = useCallback(() => {
     setNowMs(Date.now());
-    void loadApiKeyAliases();
-    void loadMonitoringMeta();
     void analytics.refresh({ force: true });
     void filterSelectorsAnalytics.refresh({ force: true });
     if (selectedApiKeyTimelineAnalytics.enabled) {
@@ -770,12 +769,35 @@ export function useUsageAnalytics() {
     apiKeyTrendAnalytics,
     filterSelectorsAnalytics,
     heatmapDateAnalytics,
-    loadApiKeyAliases,
-    loadMonitoringMeta,
     selectedApiKeyTimelineAnalytics,
     selectedCredentialTimelineAnalytics,
     selectedHeatmapDate,
   ]);
+
+  const refresh = useCallback(() => {
+    void loadApiKeyAliases();
+    void loadMonitoringMeta();
+    refreshAnalytics();
+  }, [loadApiKeyAliases, loadMonitoringMeta, refreshAnalytics]);
+
+  // Keep ranges that end at "now" live: poll while the tab is visible, and catch up
+  // immediately when it becomes visible again.
+  const refreshAnalyticsRef = useRef(refreshAnalytics);
+  refreshAnalyticsRef.current = refreshAnalytics;
+  const liveRange = filters.timeRange !== 'custom' && filters.timeRange !== 'yesterday';
+  useEffect(() => {
+    if (!liveRange || !analytics.enabled) return undefined;
+    const hasDocument = typeof document !== 'undefined';
+    const tick = () => {
+      if (!hasDocument || document.visibilityState === 'visible') refreshAnalyticsRef.current();
+    };
+    const timer = setInterval(tick, USAGE_AUTO_REFRESH_MS);
+    if (hasDocument) document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(timer);
+      if (hasDocument) document.removeEventListener('visibilitychange', tick);
+    };
+  }, [liveRange, analytics.enabled]);
 
   return {
     filters,
