@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -12,7 +13,14 @@ import {
 import { createPortal } from 'react-dom';
 import type { TFunction } from 'i18next';
 import { Button } from '@/components/ui/Button';
-import { IconCopy, IconEye, IconEyeOff, IconFilter } from '@/components/ui/icons';
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconCopy,
+  IconEye,
+  IconEyeOff,
+  IconFilter,
+} from '@/components/ui/icons';
 import {
   PaginationControls,
   RecentPattern,
@@ -46,6 +54,8 @@ type PaginationState<T> = {
 
 type RealtimeEventsPanelProps = {
   embedded?: boolean;
+  /** Start with every row's detail row open (used by tests and a future expand-all). */
+  initialExpandedAll?: boolean;
   rows: RealtimeLogRow[];
   pagination: PaginationState<RealtimeLogRow>;
   pageSize: number;
@@ -1006,6 +1016,7 @@ export function RealtimeEventsPanelActions({
 
 export function RealtimeEventsPanel({
   embedded = false,
+  initialExpandedAll = false,
   rows,
   pagination,
   pageSize,
@@ -1029,6 +1040,20 @@ export function RealtimeEventsPanel({
   onLoadMoreEvents,
 }: RealtimeEventsPanelProps) {
   const tooltipIdPrefix = useId();
+  const [expandedRowIds, setExpandedRowIds] = useState<ReadonlySet<string>>(
+    () => new Set(initialExpandedAll ? rows.map((row) => row.id) : [])
+  );
+  const toggleRowExpanded = useCallback((rowId: string) => {
+    setExpandedRowIds((current) => {
+      const next = new Set(current);
+      if (next.has(rowId)) {
+        next.delete(rowId);
+      } else {
+        next.add(rowId);
+      }
+      return next;
+    });
+  }, []);
   const showNotification = useNotificationStore((state) => state.showNotification);
   const sourceApiKeyLabel = shortLabel(
     t,
@@ -1192,29 +1217,72 @@ export function RealtimeEventsPanel({
               const ttftToneClass = getRealtimeDurationToneClass(row.ttftMs);
               const latencyToneClass = getRealtimeDurationToneClass(row.latencyMs);
               const tokenUsage = buildRealtimeTokenUsageDetails(row, t);
+              const isExpanded = expandedRowIds.has(row.id);
+              const detailId = `${tooltipIdPrefix}-row-detail-${row.id}`;
+              const metadataLines = sourceDisplay.requestMetadataTitle
+                ? sourceDisplay.requestMetadataTitle.split('\n')
+                : [];
+              const detailFields: Array<{ label: string; value: string; title?: string }> = [
+                ...(sourceDisplay.meta
+                  ? [{ label: t('monitoring.realtime_account_label'), value: sourceDisplay.meta }]
+                  : []),
+                ...(apiKeyDisplay
+                  ? [
+                      {
+                        label: t('monitoring.realtime_api_key_label'),
+                        value: apiKeyDisplay.display,
+                        title: apiKeyDisplay.title,
+                      },
+                    ]
+                  : []),
+                { label: t('monitoring.requested_model'), value: requestedModel },
+                ...(showResolvedModel
+                  ? [{ label: t('monitoring.resolved_model'), value: resolvedModel }]
+                  : []),
+                ...(showResponseModelInTooltip
+                  ? [{ label: t('monitoring.response_model'), value: responseModel }]
+                  : []),
+                ...(reasoningEffort !== '-'
+                  ? [{ label: t('monitoring.realtime_reasoning_label'), value: reasoningEffort }]
+                  : []),
+                ...(requestServiceTier !== '-'
+                  ? [{ label: t('monitoring.realtime_request_tier_label'), value: requestServiceTier }]
+                  : []),
+                ...(responseServiceTier !== '-'
+                  ? [{ label: t('monitoring.realtime_response_tier_label'), value: responseServiceTier }]
+                  : []),
+              ];
               return (
-                <tr key={row.id} className={row.failed ? styles.logRowFailed : undefined}>
+                <Fragment key={row.id}>
+                <tr
+                  className={[
+                    row.failed ? styles.logRowFailed : '',
+                    isExpanded ? styles.realtimeRowExpanded : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                >
                   <td>
-                    <div className={styles.logTypeCell}>
-                      <div className={styles.primaryCell} title={sourceDisplay.title}>
-                        <span>{sourceDisplay.primary}</span>
-                        {sourceDisplay.meta ? <small>{sourceDisplay.meta}</small> : null}
-                        {sourceDisplay.requestMetadataTitle ? (
-                          <details className={styles.realtimeRequestMetadata}>
-                            <summary>{t('monitoring.request_metadata')}</summary>
-                            <small>
-                              {sourceDisplay.requestMetadataTitle.split('\n').map((line) => (
-                                <span key={line}>{line}</span>
-                              ))}
-                            </small>
-                          </details>
-                        ) : null}
-                        {apiKeyDisplay ? (
-                          <small className={styles.realtimeApiKeyLine} title={apiKeyDisplay.title}>
-                            {`${t('monitoring.realtime_api_key_label')}: ${apiKeyDisplay.display}`}
-                          </small>
-                        ) : null}
-                      </div>
+                    <div className={styles.realtimeSourceCell} title={sourceDisplay.title}>
+                      <button
+                        type="button"
+                        className={styles.realtimeExpandButton}
+                        aria-expanded={isExpanded}
+                        aria-controls={detailId}
+                        aria-label={t(
+                          isExpanded
+                            ? 'monitoring.realtime_collapse_details'
+                            : 'monitoring.realtime_expand_details'
+                        )}
+                        onClick={() => toggleRowExpanded(row.id)}
+                      >
+                        {isExpanded ? (
+                          <IconChevronDown size={14} aria-hidden="true" />
+                        ) : (
+                          <IconChevronRight size={14} aria-hidden="true" />
+                        )}
+                      </button>
+                      <span className={styles.realtimeSourceText}>{sourceDisplay.primary}</span>
                     </div>
                   </td>
                   <td>
@@ -1225,20 +1293,10 @@ export function RealtimeEventsPanel({
                       <span className={`${styles.monoCell} ${styles.realtimeModelText}`}>
                         {requestedModel}
                       </span>
-                      {showResolvedModel ? (
-                        <small className={`${styles.monoCell} ${styles.realtimeModelRoutedText}`}>
-                          {`→ ${resolvedModel}`}
-                        </small>
-                      ) : null}
                       {hasResponseModelMismatch ? (
-                        <div className={styles.realtimeModelResponseLine}>
-                          <small className={`${styles.monoCell} ${styles.realtimeModelResponseText}`}>
-                            {`↳ ${responseModel}`}
-                          </small>
-                          <span className={styles.realtimeModelMismatchBadge}>
-                            {t('monitoring.model_mismatch')}
-                          </span>
-                        </div>
+                        <span className={styles.realtimeModelMismatchBadge}>
+                          {t('monitoring.model_mismatch')}
+                        </span>
                       ) : null}
                       {requestTags.length > 0 ? (
                         <div className={styles.realtimeRequestTags}>
@@ -1352,6 +1410,36 @@ export function RealtimeEventsPanel({
                     {formatCompactNumber(row.requestCount)}
                   </td>
                 </tr>
+                {isExpanded ? (
+                  <tr id={detailId} className={styles.realtimeDetailRow}>
+                    <td colSpan={11}>
+                      <dl className={styles.realtimeDetailGrid}>
+                        {detailFields.map((field) => (
+                          <div key={field.label} className={styles.realtimeDetailItem}>
+                            <dt>{field.label}</dt>
+                            <dd title={field.title}>{field.value}</dd>
+                          </div>
+                        ))}
+                        {metadataLines.map((line) => (
+                          <div key={line} className={styles.realtimeDetailItem}>
+                            <dd>{line}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                      {requestDiagnosticDetails ? (
+                        <div className={styles.realtimeDetailDiagnostics}>
+                          {requestDiagnosticDetails.summary ? (
+                            <span>{requestDiagnosticDetails.summary}</span>
+                          ) : null}
+                          {requestDiagnosticDetails.diagnostics.map((item) => (
+                            <span key={item}>{item}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                ) : null}
+                </Fragment>
               );
             })}
             {rows.length === 0 ? (

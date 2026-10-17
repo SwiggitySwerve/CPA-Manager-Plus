@@ -1,3 +1,4 @@
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { TFunction } from 'i18next';
 import { describe, expect, it, vi } from 'vitest';
@@ -168,10 +169,14 @@ const baseRow = (overrides: Partial<PanelRow> = {}): PanelRow => ({
   ...overrides,
 });
 
-const renderPanel = (row: PanelRow, overrides: PanelOverrides = {}) =>
+const renderPanel = (
+  row: PanelRow,
+  overrides: PanelOverrides & { expanded?: boolean } = {}
+) =>
   renderToStaticMarkup(
     <RealtimeEventsPanel
       embedded
+      initialExpandedAll={overrides.expanded ?? false}
       rows={[row]}
       pagination={{
         currentPage: 1,
@@ -389,15 +394,17 @@ describe('RealtimeEventsPanel', () => {
         apiKeyLabel: 'Team A',
         apiKeyMasked: 'sk-...cdef',
         executorType: 'codex',
-      })
+      }),
+      { expanded: true }
     );
 
     expect(markup).toContain('<th>Source / API Key</th>');
-    expect(markup).toContain('API Key: Team A');
+    expect(markup).toContain('<dt>API Key</dt>');
+    expect(markup).toContain('>Team A</dd>');
     expect(markup).not.toContain('#12345678');
     expect(markup).toContain('API Key hash: 1234567890abcdef');
     expect(markup).toContain('Masked key: sk-...cdef');
-    expect(markup).toMatch(/class="[^"]*realtimeApiKeyLine[^"]*" title=/);
+    expect(markup).toMatch(/<dd title="[^"]*API Key hash[^"]*">Team A<\/dd>/);
     expect(markup).toContain('Executor: codex');
     expect(markup).not.toContain('>Executor: codex<');
   });
@@ -419,14 +426,15 @@ describe('RealtimeEventsPanel', () => {
         model: 'deepseek-v4-flash',
         requestedModel: 'deepseek-v4-flash(max)',
         resolvedModel: 'resolved-deepseek-v4-flash',
-      })
+      }),
+      { expanded: true }
     );
 
     expect(markup).toContain(
       'title="Requested model: deepseek-v4-flash(max)\nRouted model: resolved-deepseek-v4-flash"'
     );
     expect(markup.indexOf('>deepseek-v4-flash(max)</span>')).toBeLessThan(
-      markup.indexOf('>→ resolved-deepseek-v4-flash</small>')
+      markup.indexOf('<dt>Routed model</dt><dd>resolved-deepseek-v4-flash</dd>')
     );
     expect(markup).not.toContain('>deepseek-v4-flash</span>');
   });
@@ -454,11 +462,12 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'gpt-4o',
           resolvedModel: 'gpt-4o',
           responseModel: 'gpt-4o',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain('title="Requested model: gpt-4o"');
       expect(markup).toContain('>gpt-4o</span>');
-      expect(markup).not.toContain('realtimeModelRoutedText');
+      expect(markup).not.toContain('<dt>Routed model</dt>');
       expect(markup).not.toContain('realtimeModelResponseLine');
       expect(markup).not.toContain('realtimeModelMismatchBadge');
       expect(markup).not.toContain('Model mismatch');
@@ -470,11 +479,12 @@ describe('RealtimeEventsPanel', () => {
           model: 'gpt-4o',
           requestedModel: 'gpt-4o',
           resolvedModel: 'gpt-4o-2024-08-06',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain('title="Requested model: gpt-4o\nRouted model: gpt-4o-2024-08-06"');
       expect(markup).toContain('>gpt-4o</span>');
-      expect(markup).toContain('>→ gpt-4o-2024-08-06</small>');
+      expect(markup).toContain('<dt>Routed model</dt><dd>gpt-4o-2024-08-06</dd>');
       expect(markup).not.toContain('realtimeModelResponseLine');
       expect(markup).not.toContain('realtimeModelMismatchBadge');
     });
@@ -486,14 +496,15 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'gpt-4o',
           resolvedModel: 'gpt-4o-2024-08-06',
           responseModel: 'gpt-4o-mini',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain(
         'title="Requested model: gpt-4o\nRouted model: gpt-4o-2024-08-06\nResponse model: gpt-4o-mini\nModel mismatch"'
       );
       expect(markup).toContain('>gpt-4o</span>');
-      expect(markup).toContain('>→ gpt-4o-2024-08-06</small>');
-      expect(markup).toContain('>↳ gpt-4o-mini</small>');
+      expect(markup).toContain('<dt>Routed model</dt><dd>gpt-4o-2024-08-06</dd>');
+      expect(markup).toContain('<dt>Response model</dt><dd>gpt-4o-mini</dd>');
       expect(markup).toContain('realtimeModelMismatchBadge');
       expect(markup).toContain('Model mismatch');
     });
@@ -505,14 +516,15 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'claude-3-5-sonnet',
           resolvedModel: 'claude-3-5-sonnet',
           responseModel: 'claude-3-haiku',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain(
         'title="Requested model: claude-3-5-sonnet\nResponse model: claude-3-haiku\nModel mismatch"'
       );
       expect(markup).toContain('>claude-3-5-sonnet</span>');
-      expect(markup).not.toContain('realtimeModelRoutedText');
-      expect(markup).toContain('>↳ claude-3-haiku</small>');
+      expect(markup).not.toContain('<dt>Routed model</dt>');
+      expect(markup).toContain('<dt>Response model</dt><dd>claude-3-haiku</dd>');
       expect(markup).toContain('realtimeModelMismatchBadge');
     });
 
@@ -523,11 +535,12 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'gpt-4o',
           resolvedModel: 'gpt-4o-2024-08-06',
           responseModel: 'gpt-4o-2024-08-06',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain('title="Requested model: gpt-4o\nRouted model: gpt-4o-2024-08-06"');
       expect(markup).toContain('>gpt-4o</span>');
-      expect(markup).toContain('>→ gpt-4o-2024-08-06</small>');
+      expect(markup).toContain('<dt>Routed model</dt><dd>gpt-4o-2024-08-06</dd>');
       expect(markup).not.toContain('realtimeModelResponseLine');
       expect(markup).not.toContain('realtimeModelMismatchBadge');
       expect(markup).not.toContain('Model mismatch');
@@ -540,14 +553,15 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'gpt-4o',
           resolvedModel: 'gpt-4o-azure',
           responseModel: 'gpt-4o',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain(
         'title="Requested model: gpt-4o\nRouted model: gpt-4o-azure\nResponse model: gpt-4o\nModel mismatch"'
       );
       expect(markup).toContain('>gpt-4o</span>');
-      expect(markup).toContain('>→ gpt-4o-azure</small>');
-      expect(markup).toContain('>↳ gpt-4o</small>');
+      expect(markup).toContain('<dt>Routed model</dt><dd>gpt-4o-azure</dd>');
+      expect(markup).toContain('<dt>Response model</dt><dd>gpt-4o</dd>');
       expect(markup).toContain('realtimeModelMismatchBadge');
     });
 
@@ -559,11 +573,12 @@ describe('RealtimeEventsPanel', () => {
           resolvedModel: 'deepseek-v3',
           responseModel: 'deepseek-v2.5',
           failed: true,
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain('logRowFailed');
       expect(markup).toContain('realtimeModelMismatchBadge');
-      expect(markup).toContain('>↳ deepseek-v2.5</small>');
+      expect(markup).toContain('<dt>Response model</dt><dd>deepseek-v2.5</dd>');
       expect(markup).toContain(
         'title="Requested model: deepseek-chat\nRouted model: deepseek-v3\nResponse model: deepseek-v2.5\nModel mismatch"'
       );
@@ -576,11 +591,12 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'gpt-3.5-turbo',
           resolvedModel: 'gpt-3.5-turbo-0125',
           responseModel: undefined,
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain('title="Requested model: gpt-3.5-turbo\nRouted model: gpt-3.5-turbo-0125"');
       expect(markup).toContain('>gpt-3.5-turbo</span>');
-      expect(markup).toContain('>→ gpt-3.5-turbo-0125</small>');
+      expect(markup).toContain('<dt>Routed model</dt><dd>gpt-3.5-turbo-0125</dd>');
       expect(markup).not.toContain('realtimeModelResponseLine');
       expect(markup).not.toContain('realtimeModelMismatchBadge');
     });
@@ -592,11 +608,12 @@ describe('RealtimeEventsPanel', () => {
           requestedModel: 'gpt-5.6-sol',
           resolvedModel: '',
           responseModel: 'gpt-5.6-sol',
-        })
+        }),
+        { expanded: true }
       );
       expect(markup).toContain('title="Requested model: gpt-5.6-sol\nResponse model: gpt-5.6-sol"');
       expect(markup).toContain('>gpt-5.6-sol</span>');
-      expect(markup).not.toContain('realtimeModelRoutedText');
+      expect(markup).not.toContain('<dt>Routed model</dt>');
       expect(markup).not.toContain('realtimeModelResponseLine');
       expect(markup).not.toContain('realtimeModelMismatchBadge');
       expect(markup).not.toContain('Model mismatch');
@@ -645,22 +662,23 @@ describe('RealtimeEventsPanel', () => {
     expect(fullMarkup).not.toContain('<small>Account: visible-user@example.com</small>');
   });
 
-  it('exposes request metadata through a keyboard-expandable disclosure only in full mode', () => {
+  it('exposes request metadata in the expandable detail row only in full mode', () => {
     const row = baseRow({
       clientIp: '192.0.2.10',
       xForwardedFor: '203.0.113.5, 198.51.100.8',
       userAgent: 'test-client/1.0',
     });
-    const maskedMarkup = renderPanel(row);
-    const fullMarkup = renderPanel(row, { accountDisplayMode: 'full' });
+    const maskedMarkup = renderPanel(row, { expanded: true });
+    const collapsedMarkup = renderPanel(row, { accountDisplayMode: 'full' });
+    const fullMarkup = renderPanel(row, { accountDisplayMode: 'full', expanded: true });
 
     for (const value of ['192.0.2.10', '203.0.113.5', 'test-client/1.0']) {
       expect(maskedMarkup).not.toContain(value);
       expect(fullMarkup).toContain(value);
     }
-    expect(maskedMarkup).not.toContain('Request metadata');
-    expect(fullMarkup).toContain(`<details class="${styles.realtimeRequestMetadata}">`);
-    expect(fullMarkup).toContain('<summary>Request metadata</summary>');
+    expect(maskedMarkup).not.toContain('Client IP');
+    expect(collapsedMarkup).not.toContain('<dd>Client IP');
+    expect(fullMarkup).toContain(`class="${styles.realtimeDetailRow}"`);
     expect(fullMarkup).toContain('Client IP: 192.0.2.10');
     expect(fullMarkup).toContain(
       'Forwarded chain (unverified): 203.0.113.5, 198.51.100.8'
@@ -810,12 +828,57 @@ describe('RealtimeEventsPanel', () => {
         apiKeyHash: 'aabbccddeeff0011',
         apiKeyLabel: 'Production Key',
         apiKeyMasked: 'sk-...0011',
-      })
+      }),
+      { expanded: true }
     );
 
-    expect(markup).toContain('<span>api.codex.example.com</span>');
-    expect(markup).toContain('API Key: Production Key');
+    expect(markup).toContain('>api.codex.example.com</span>');
+    expect(markup).toContain('>Production Key</dd>');
     expect(markup).not.toContain(`<span>h:${validHash}</span>`);
     expect(markup).not.toContain('<span>k:');
+  });
+
+  it('toggles the detail row from the row expand button', () => {
+    const row = baseRow({ requestedModel: 'client-gpt', resolvedModel: 'routed-gpt' });
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        <RealtimeEventsPanel
+          embedded
+          rows={[row]}
+          pagination={{ currentPage: 1, totalPages: 1, pageItems: [row], startItem: 1, endItem: 1 }}
+          pageSize={10}
+          scopedFailureCount={0}
+          failedOnlyActive={false}
+          eventsHasMore={false}
+          eventsLoadingMore={false}
+          eventsRetentionLimited={false}
+          eventsTotalCount={1}
+          eventsLoadedCount={1}
+          overallLoading={false}
+          hasPrices={false}
+          accountDisplayMode="masked"
+          locale="en-US"
+          emptyState={<span>empty</span>}
+          t={t}
+          onToggleFailedOnly={noop}
+          onAccountDisplayModeChange={noop}
+          onPageChange={noop}
+          onPageSizeChange={noop}
+          onLoadMoreEvents={noop}
+        />
+      );
+    });
+    const toggle = () => renderer.root.findByProps({ className: styles.realtimeExpandButton });
+    const detailRows = () =>
+      renderer.root.findAll((node) => node.props.className === styles.realtimeDetailRow);
+
+    expect(toggle().props['aria-expanded']).toBe(false);
+    expect(detailRows()).toHaveLength(0);
+    act(() => toggle().props.onClick());
+    expect(toggle().props['aria-expanded']).toBe(true);
+    expect(detailRows()).toHaveLength(1);
+    act(() => toggle().props.onClick());
+    expect(detailRows()).toHaveLength(0);
   });
 });
