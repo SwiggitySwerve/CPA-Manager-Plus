@@ -946,6 +946,14 @@ func readModelsDevContextTiers(cost map[string]any) []store.ModelPriceContextTie
 	return normalized
 }
 
+var modelsDevServiceTierModes = []struct {
+	mode        string
+	serviceTier string
+}{
+	{mode: "fast", serviceTier: "priority"},
+	{mode: "ultrafast", serviceTier: "ultrafast"},
+}
+
 func readModelsDevServiceTiers(entry map[string]any) []store.ModelPriceServiceTier {
 	experimental, ok := entry["experimental"].(map[string]any)
 	if !ok {
@@ -955,39 +963,43 @@ func readModelsDevServiceTiers(entry map[string]any) []store.ModelPriceServiceTi
 	if !ok {
 		return nil
 	}
-	fast, ok := modes["fast"].(map[string]any)
-	if !ok {
-		return nil
+	var tiers []store.ModelPriceServiceTier
+	for _, definition := range modelsDevServiceTierModes {
+		modeEntry, ok := modes[definition.mode].(map[string]any)
+		if !ok {
+			continue
+		}
+		cost, ok := modeEntry["cost"].(map[string]any)
+		if !ok {
+			continue
+		}
+		prompt, hasPrompt := readFloat(cost, "input")
+		completion, hasCompletion := readFloat(cost, "output")
+		cacheRead, hasCacheRead := readFloat(cost, "cache_read")
+		cacheCreation, hasCacheCreation := readFloat(cost, "cache_write")
+		if !hasPrompt && !hasCompletion && !hasCacheRead && !hasCacheCreation {
+			continue
+		}
+		tiers = append(tiers, store.ModelPriceServiceTier{
+			Mode:                    definition.mode,
+			ServiceTier:             definition.serviceTier,
+			Prompt:                  prompt,
+			Completion:              completion,
+			Cache:                   cacheRead,
+			CacheRead:               cacheRead,
+			CacheCreation:           cacheCreation,
+			PromptConfigured:        hasPrompt,
+			CompletionConfigured:    hasCompletion,
+			CacheConfigured:         hasCacheRead,
+			CacheReadConfigured:     hasCacheRead,
+			CacheCreationConfigured: hasCacheCreation,
+		})
 	}
-	cost, ok := fast["cost"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	prompt, hasPrompt := readFloat(cost, "input")
-	completion, hasCompletion := readFloat(cost, "output")
-	cacheRead, hasCacheRead := readFloat(cost, "cache_read")
-	cacheCreation, hasCacheCreation := readFloat(cost, "cache_write")
-	if !hasPrompt && !hasCompletion && !hasCacheRead && !hasCacheCreation {
-		return nil
-	}
-	tiers, err := model.NormalizeModelPriceServiceTiers([]store.ModelPriceServiceTier{{
-		Mode:                    "fast",
-		ServiceTier:             "priority",
-		Prompt:                  prompt,
-		Completion:              completion,
-		Cache:                   cacheRead,
-		CacheRead:               cacheRead,
-		CacheCreation:           cacheCreation,
-		PromptConfigured:        hasPrompt,
-		CompletionConfigured:    hasCompletion,
-		CacheConfigured:         hasCacheRead,
-		CacheReadConfigured:     hasCacheRead,
-		CacheCreationConfigured: hasCacheCreation,
-	}})
+	normalized, err := model.NormalizeModelPriceServiceTiers(tiers)
 	if err != nil {
 		return nil
 	}
-	return tiers
+	return normalized
 }
 
 func modelsDevModelID(sourceModelID string) (string, bool) {

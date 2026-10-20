@@ -546,7 +546,6 @@ func TestModelPriceUpsertSyncedManualPriceAndNewModelRejectedWithRawDeletion(t *
 	}
 }
 
-
 func TestModelPriceStructureChangeAllowedAfterRawDeletionWithRetainedProjection(t *testing.T) {
 	ctx := context.Background()
 	db, repo := openTestDB(t)
@@ -602,7 +601,6 @@ func TestModelPriceUpsertSyncedStructureChangeAllowedAfterRawDeletionWithRetaine
 		t.Fatalf("expected model-b to be persisted")
 	}
 }
-
 
 func TestModelPriceStructureChangePreservesRetainedVerifierSystemError(t *testing.T) {
 	ctx := context.Background()
@@ -674,5 +672,108 @@ func TestModelPriceUpsertSyncedPreservesRetainedVerifierSystemError(t *testing.T
 	}
 	if _, ok := persisted["model-b"]; ok {
 		t.Fatal("model-b should not exist after verifier system error")
+	}
+}
+
+func ultrafastTestTier(prompt float64) model.ModelPriceServiceTier {
+	return model.ModelPriceServiceTier{
+		Mode:             "ultrafast",
+		ServiceTier:      "ultrafast",
+		Prompt:           prompt,
+		Completion:       prompt * 5,
+		PromptConfigured: true, CompletionConfigured: true,
+	}
+}
+
+func priorityTestTier(prompt float64) model.ModelPriceServiceTier {
+	return model.ModelPriceServiceTier{
+		Mode:             "fast",
+		ServiceTier:      "priority",
+		Prompt:           prompt,
+		Completion:       prompt * 5,
+		PromptConfigured: true, CompletionConfigured: true,
+	}
+}
+
+func serviceTierByMode(price model.ModelPrice) map[string]model.ModelPriceServiceTier {
+	byMode := map[string]model.ModelPriceServiceTier{}
+	for _, tier := range price.ServiceTiers {
+		byMode[tier.Mode] = tier
+	}
+	return byMode
+}
+
+func TestModelPriceUpsertSyncedPreservesLocalUltrafastTierWhenSyncOmitsIt(t *testing.T) {
+	ctx := context.Background()
+	_, repo := openTestDB(t)
+
+	if err := repo.ReplaceAll(ctx, map[string]model.ModelPrice{
+		"gpt-test": {
+			Prompt: 2, Completion: 10, PromptConfigured: true, CompletionConfigured: true,
+			Source:       "models.dev",
+			ServiceTiers: []model.ModelPriceServiceTier{priorityTestTier(4), ultrafastTestTier(12)},
+		},
+	}); err != nil {
+		t.Fatalf("seed ReplaceAll: %v", err)
+	}
+
+	result, err := repo.UpsertSynced(ctx, map[string]model.ModelPrice{
+		"gpt-test": {
+			Prompt: 2, Completion: 10, PromptConfigured: true, CompletionConfigured: true,
+			Source:       "models.dev",
+			ServiceTiers: []model.ModelPriceServiceTier{priorityTestTier(5)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertSynced: %v", err)
+	}
+	if result.Imported != 1 {
+		t.Fatalf("Imported = %d, want 1", result.Imported)
+	}
+
+	persisted, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	tiers := serviceTierByMode(persisted["gpt-test"])
+	if got := tiers["fast"].Prompt; got != 5 {
+		t.Fatalf("priority tier was not refreshed by sync: prompt = %v, want 5", got)
+	}
+	ultrafast, ok := tiers["ultrafast"]
+	if !ok || ultrafast.Prompt != 12 || ultrafast.Completion != 60 {
+		t.Fatalf("local ultrafast tier was not preserved: %+v", persisted["gpt-test"].ServiceTiers)
+	}
+}
+
+func TestModelPriceUpsertSyncedReplacesUltrafastTierWhenSyncProvidesIt(t *testing.T) {
+	ctx := context.Background()
+	_, repo := openTestDB(t)
+
+	if err := repo.ReplaceAll(ctx, map[string]model.ModelPrice{
+		"gpt-test": {
+			Prompt: 2, Completion: 10, PromptConfigured: true, CompletionConfigured: true,
+			Source:       "models.dev",
+			ServiceTiers: []model.ModelPriceServiceTier{ultrafastTestTier(12)},
+		},
+	}); err != nil {
+		t.Fatalf("seed ReplaceAll: %v", err)
+	}
+
+	if _, err := repo.UpsertSynced(ctx, map[string]model.ModelPrice{
+		"gpt-test": {
+			Prompt: 2, Completion: 10, PromptConfigured: true, CompletionConfigured: true,
+			Source:       "models.dev",
+			ServiceTiers: []model.ModelPriceServiceTier{ultrafastTestTier(14)},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertSynced: %v", err)
+	}
+
+	persisted, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(persisted["gpt-test"].ServiceTiers) != 1 || persisted["gpt-test"].ServiceTiers[0].Prompt != 14 {
+		t.Fatalf("synced ultrafast tier did not replace the local one: %+v", persisted["gpt-test"].ServiceTiers)
 	}
 }

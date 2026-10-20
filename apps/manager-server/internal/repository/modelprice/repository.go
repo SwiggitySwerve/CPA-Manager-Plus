@@ -376,7 +376,9 @@ func (r *repository) UpsertSynced(ctx context.Context, prices map[string]model.M
 		return model.ModelPriceSyncResult{}, err
 	}
 	defer tierStmt.Close()
-	deleteServiceTierStmt, err := tx.PrepareContext(ctx, `delete from model_price_service_tiers where model = ?`)
+	deleteServiceTierStmt, err := tx.PrepareContext(ctx, `delete from model_price_service_tiers
+		where model = ?
+		and not (mode = 'ultrafast' and service_tier = 'ultrafast' and ? = 1)`)
 	if err != nil {
 		return model.ModelPriceSyncResult{}, err
 	}
@@ -447,7 +449,7 @@ func (r *repository) UpsertSynced(ctx context.Context, prices map[string]model.M
 		if err := insertContextTiers(ctx, tierStmt, modelID, price.ContextTiers); err != nil {
 			return model.ModelPriceSyncResult{}, err
 		}
-		if _, err := deleteServiceTierStmt.ExecContext(ctx, modelID); err != nil {
+		if _, err := deleteServiceTierStmt.ExecContext(ctx, modelID, preserveUltrafastTier(price.ServiceTiers)); err != nil {
 			return model.ModelPriceSyncResult{}, err
 		}
 		if err := insertServiceTiers(ctx, serviceTierStmt, modelID, price.ServiceTiers); err != nil {
@@ -504,6 +506,18 @@ func insertContextTiers(ctx context.Context, stmt *sql.Stmt, modelID string, tie
 		}
 	}
 	return nil
+}
+
+// preserveUltrafastTier returns 1 when a sync carries no ultrafast rule of its
+// own, so a locally configured ultrafast price survives the sync's tier
+// replacement. A sync that does carry one replaces it normally.
+func preserveUltrafastTier(incoming []model.ModelPriceServiceTier) int {
+	for _, tier := range incoming {
+		if tier.Mode == "ultrafast" && tier.ServiceTier == "ultrafast" {
+			return 0
+		}
+	}
+	return 1
 }
 
 func prepareServiceTierInsert(ctx context.Context, tx *sql.Tx) (*sql.Stmt, error) {

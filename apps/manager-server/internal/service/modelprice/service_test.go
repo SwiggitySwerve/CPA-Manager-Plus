@@ -2053,3 +2053,51 @@ func TestRuntimeModelPricingStatus_DiscoveryFailure(t *testing.T) {
 		t.Fatal("expected error on discovery failure, got nil")
 	}
 }
+
+func TestFetchModelsDevModelPricesReadsFastAndUltrafastModes(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"openai": {"models": {
+				"gpt-both": {"cost":{"input":2,"output":10,"cache_read":0.1},"experimental":{"modes":{
+					"fast":{"cost":{"input":4,"output":20,"cache_read":0.2}},
+					"ultrafast":{"cost":{"input":12,"output":60,"cache_read":0.6,"cache_write":15}},
+					"pro":null
+				}}},
+				"gpt-ultra-only": {"cost":{"input":1,"output":2},"experimental":{"modes":{"ultrafast":{"cost":{"input":6,"output":12}}}}},
+				"gpt-empty-ultra": {"cost":{"input":1,"output":2},"experimental":{"modes":{"ultrafast":{"cost":{}}}}}
+			}}
+		}`))
+	}))
+	t.Cleanup(source.Close)
+
+	prices, _, err := fetchModelsDevModelPrices(context.Background(), source.URL, source.Client())
+	if err != nil {
+		t.Fatalf("fetch models.dev prices: %v", err)
+	}
+
+	both := prices["openai/gpt-both"].ServiceTiers
+	if len(both) != 2 {
+		t.Fatalf("gpt-both service tiers = %#v", both)
+	}
+	byMode := map[string]store.ModelPriceServiceTier{}
+	for _, tier := range both {
+		byMode[tier.Mode] = tier
+	}
+	fast, ultrafast := byMode["fast"], byMode["ultrafast"]
+	if fast.ServiceTier != "priority" || fast.Prompt != 4 || fast.Completion != 20 {
+		t.Fatalf("fast tier = %#v", fast)
+	}
+	if ultrafast.ServiceTier != "ultrafast" || ultrafast.Prompt != 12 || ultrafast.Completion != 60 ||
+		ultrafast.CacheRead != 0.6 || ultrafast.CacheCreation != 15 || !ultrafast.CacheCreationConfigured {
+		t.Fatalf("ultrafast tier = %#v", ultrafast)
+	}
+
+	only := prices["openai/gpt-ultra-only"].ServiceTiers
+	if len(only) != 1 || only[0].Mode != "ultrafast" || only[0].Prompt != 6 {
+		t.Fatalf("ultrafast-only tiers = %#v", only)
+	}
+	if got := prices["openai/gpt-empty-ultra"].ServiceTiers; len(got) != 0 {
+		t.Fatalf("empty ultrafast cost must not produce a tier: %#v", got)
+	}
+}
