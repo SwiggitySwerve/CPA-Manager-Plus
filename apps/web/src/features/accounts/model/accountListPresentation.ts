@@ -483,6 +483,12 @@ const resolveQuotaWindowLimitKind = (
   return hasUnknownLimitedWindow ? 'unknown' : null;
 };
 
+const CLAUDE_SEPARATE_ALLOWANCE_WINDOW_KEY = /iguana/i;
+
+const isClaudeAccountWideQuotaWindow = (window: AccountListQuotaWindowPresentation): boolean =>
+  (window.modelScope?.kind ?? 'all') === 'all' &&
+  !CLAUDE_SEPARATE_ALLOWANCE_WINDOW_KEY.test(window.key);
+
 const resolveAntigravityAvailability = (
   row: AccountRow,
   quotaWindows: AccountListQuotaWindowPresentation[]
@@ -1178,9 +1184,11 @@ export const buildAccountListItem = (
   const accountQuotaWindows =
     row.provider === 'codex'
       ? quotaWindows.filter(isCodexMainQuotaWindow)
-      : row.provider === 'xai' && !isConfirmedPaidXaiPlan(row.planType)
-        ? []
-        : quotaWindows;
+      : row.provider === 'claude'
+        ? quotaWindows.filter(isClaudeAccountWideQuotaWindow)
+        : row.provider === 'xai' && !isConfirmedPaidXaiPlan(row.planType)
+          ? []
+          : quotaWindows;
   const health = resolveHealthStatus(
     row,
     quotaCooldown,

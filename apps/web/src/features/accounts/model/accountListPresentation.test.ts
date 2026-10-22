@@ -1610,4 +1610,60 @@ describe('accountListPresentation', () => {
     expect(item.health.status).not.toBe('limited');
     expect(item.recommendation.hasRecommendation).toBe(false);
   });
+
+  it('does not mark a Claude account exhausted when only the separate Fable allowance is at 100%', () => {
+    const resetAtMs = Date.parse('2026-11-05T07:59:00Z');
+    const baseWindow = {
+      resetLabel: '2026-10-29T14:00:00Z',
+      resetAtMs: Date.parse('2026-10-29T14:00:00Z'),
+      resetAccuracy: 'exact' as const,
+    };
+    const item = buildAccountListItem(makeRow({ provider: 'claude', fileName: 'claude-1.json' }), {
+      quotaWindows: [
+        {
+          key: 'seven-day',
+          label: '7-day limit',
+          kind: 'weekly',
+          remainingPercent: 79,
+          usedPercent: 21,
+          ...baseWindow,
+          modelScope: { kind: 'all', complete: true },
+        },
+        {
+          key: 'iguana-necktie',
+          label: 'Fable allowance',
+          kind: 'weekly',
+          remainingPercent: 0,
+          usedPercent: 100,
+          resetLabel: '2026-11-05T07:59:00Z',
+          resetAtMs,
+          resetAccuracy: 'exact',
+          modelScope: { kind: 'all', complete: true },
+        },
+      ],
+    });
+
+    expect(item.health.status).not.toBe('weekly_exhausted');
+    expect(item.health.status).not.toBe('limited');
+  });
+
+  it('still marks a Claude account exhausted when the account-wide weekly window is at 100%', () => {
+    const item = buildAccountListItem(makeRow({ provider: 'claude', fileName: 'claude-1.json' }), {
+      quotaWindows: [
+        {
+          key: 'seven-day',
+          label: '7-day limit',
+          kind: 'weekly',
+          remainingPercent: 0,
+          usedPercent: 100,
+          resetLabel: '2026-10-27T14:00:00Z',
+          resetAtMs: Date.parse('2026-10-27T14:00:00Z'),
+          resetAccuracy: 'exact',
+          modelScope: { kind: 'all', complete: true },
+        },
+      ],
+    });
+
+    expect(item.health.status).toBe('weekly_exhausted');
+  });
 });
