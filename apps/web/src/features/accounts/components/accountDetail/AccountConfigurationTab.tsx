@@ -37,7 +37,12 @@ export function AccountConfigurationTab({
   const { state, draft, errors, rawDataText, sharedSourceReadOnly, sourceMemberCount } = editor;
   const capabilities = getAuthFileConfigurationCapabilities(state?.providerKey || row.provider);
   const providerLabel = getProviderLabel(state?.providerKey || row.provider, t);
-  const disabled = disableControls || sharedSourceReadOnly || state?.saving === true;
+  const disabled =
+    disableControls ||
+    sharedSourceReadOnly ||
+    Boolean(state?.error) ||
+    state?.saving === true ||
+    state?.loading === true;
   const reloadAndRestoreFocus = () => {
     void editor.reload().then(() => {
       if (typeof window === 'undefined') return;
@@ -81,7 +86,7 @@ export function AccountConfigurationTab({
     );
   }
 
-  if (!state || state.loading) {
+  if (!state || (state.loading && !state.record)) {
     return (
       <div className={styles.configurationLoading} role="status" aria-live="polite">
         <span>{t('accounts.config_loading')}</span>
@@ -89,7 +94,7 @@ export function AccountConfigurationTab({
     );
   }
 
-  if (state.error || !draft || !state.record) {
+  if (!draft || !state.record) {
     return (
       <div className={styles.drawerDetailStack}>
         <section className={styles.drawerSection}>
@@ -118,8 +123,24 @@ export function AccountConfigurationTab({
       data-provider={state.providerKey}
       role="region"
       aria-label={t('accounts.detail_tab_config')}
+      aria-busy={state.loading}
     >
       {/* Save / discard live in the drawer footer save pill (shared with the Models tab). */}
+      {state.error ? (
+        <div className={styles.configurationLoadError} role="alert">
+          <span>{state.error}</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            id={reloadButtonId}
+            data-account-config-reload="retry"
+            onClick={reloadAndRestoreFocus}
+          >
+            <IconRefreshCw size={14} />
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
       {sharedSourceReadOnly ? (
         <div className={styles.configurationReadOnlyNotice} role="note">
           {t('accounts.config_shared_source_read_only', { count: sourceMemberCount })}
