@@ -28,6 +28,8 @@ type Service struct {
 	managerConfigService *managerconfig.Service
 	store                *store.Store
 	authFileMutations    *cpaauthfiles.MutationCoordinator
+	extraUpstreams       []string
+	owners               upstreamOwners
 }
 
 type authFileOwnershipMutation struct {
@@ -191,6 +193,11 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		writeError(w, http.StatusPreconditionRequired, errors.New("usage service is not configured"))
 		return
 	}
+	if bases := s.upstreamBases(setup.CPAUpstreamURL); len(bases) > 1 && isAuthFilesListRequest(r) {
+		s.serveMergedAuthFiles(w, r, bases, setup.ManagementKey, writeError)
+		return
+	}
+	setup = s.routeSetup(r, setup)
 	target, err := url.Parse(setup.CPAUpstreamURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

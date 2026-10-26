@@ -197,7 +197,7 @@ func fromExisting(
 			managerConfigService,
 			authFileMutationCoordinator,
 			st,
-		),
+		).WithExtraUpstreams(cfg.ExtraUpstreamURLs),
 		PanelService:             panelsvc.New(cfg.PanelPath, embeddedPanel),
 		AutomationRuntimeService: runtimeService,
 	}
