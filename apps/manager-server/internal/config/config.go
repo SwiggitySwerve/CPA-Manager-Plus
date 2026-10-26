@@ -34,6 +34,7 @@ type Config struct {
 	DataDir                      string
 	DBPath                       string
 	CPAUpstreamURL               string
+	ExtraUpstreamURLs            []string
 	ManagementKey                string
 	AdminKey                     string
 	DataKey                      string
@@ -159,6 +160,7 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		DataDir:                      dataDir,
 		DBPath:                       dbPath,
 		CPAUpstreamURL:               env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
+		ExtraUpstreamURLs:            splitCSV(env("CPA_EXTRA_UPSTREAM_URLS", "")),
 		ManagementKey:                readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
 		AdminKey:                     readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
 		DataKey:                      readSecret("CPA_MANAGER_DATA_KEY", "CPA_MANAGER_DATA_KEY_FILE", dataKeyFile),
