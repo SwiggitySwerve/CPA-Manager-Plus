@@ -2,6 +2,7 @@ import type { TFunction } from 'i18next';
 import { ANTIGRAVITY_CONFIG } from '@/components/quota';
 import {
   getQuotaWindowShortLabel,
+  getAccountQuotaSemanticGroup,
   isModelScopedAccountQuotaWindow,
   isStandardAccountQuotaListWindow,
 } from '@/features/accounts/model/accountQuotaDisplayWindows';
@@ -815,6 +816,12 @@ export const selectAccountQuotaMainListWindows = (
       candidates = selectMetaQuotaListWindows(quotaWindows);
       break;
     case 'claude':
+      // A reported balance is still useful before an idle window gets a reset time.
+      // Keep unknown boundaries unknown for historical usage attribution.
+      candidates = quotaWindows.filter(
+        (window) => getAccountQuotaSemanticGroup(window) === 'standard'
+      );
+      break;
     default:
       candidates = standardQuotaWindows;
       break;

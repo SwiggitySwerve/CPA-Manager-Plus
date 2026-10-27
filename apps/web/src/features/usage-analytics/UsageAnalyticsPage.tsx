@@ -4001,10 +4001,9 @@ const AutoRefreshCountdown = ({
   const { t } = useTranslation();
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    setNowMs(Date.now());
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [nextRefreshAtMs]);
+  }, []);
   const seconds = Math.max(0, Math.ceil((nextRefreshAtMs - nowMs) / 1000));
   const label = loading
     ? t('usage_analytics.auto_refresh_updating')

@@ -52,6 +52,33 @@ const makeQuotaWindow = (
 const makeAccountRow = (provider: string): AccountRow => ({ provider }) as AccountRow;
 
 describe('accountsPagePresentation', () => {
+  it('keeps reported Claude balances visible when no reset has been supplied', () => {
+    const idle = makeQuotaWindow({
+      key: 'five-hour',
+      source: 'claude',
+      kind: 'five_hour',
+      windowMode: 'unknown',
+      remainingPercent: 100,
+      usedPercent: 0,
+      limitWindowSeconds: 18000,
+    });
+    const weekly = makeQuotaWindow({
+      key: 'seven-day',
+      source: 'claude',
+      kind: 'weekly',
+      windowMode: 'fixed',
+      remainingPercent: 0,
+      usedPercent: 100,
+      limitWindowSeconds: 604800,
+    });
+    expect(selectAccountQuotaMainListWindows(makeAccountRow('claude'), [weekly, idle])).toEqual([
+      idle,
+      weekly,
+    ]);
+    expect(idle.resetAtMs).toBeNull();
+    expect(idle.fromMs).toBeNull();
+    expect(idle.windowMode).toBe('unknown');
+  });
   it('keeps account sort and metric formatting semantics stable', () => {
     expect(parsePriorityValue(' -12 ')).toBe(-12);
     expect(parsePriorityValue('1.2')).toBeNull();
