@@ -2642,6 +2642,24 @@ describe('accountDetailViewModel', () => {
     ).listStatusMessage).toBe('upstream unavailable');
   });
 
+  it.each(['error', 'ok', 'low', 'exhausted'] as const)(
+    'keeps authentication freshness checks for quota failures with %s capacity',
+    (status) => {
+      const row = makeRow({
+        quota: { status, error: '401 Unauthorized', errorStatus: 401, fetchedAtMs: 1_000, failedAtMs: 2_000 },
+      });
+      expect(buildAccountDetailViewModel(row).overview.recentStatus.quotaError).toBe('401 Unauthorized');
+      const recovered = buildAccountDetailViewModel(row, {
+        history: makeHistory({
+          latest_request: { timestamp_ms: 3_000, failed: false },
+          recent_requests: [{ timestamp_ms: 3_000, failed: false }],
+          last_seen_ms: 3_000,
+        }),
+      });
+      expect(recovered.overview.recentStatus.quotaError).toBeNull();
+    }
+  );
+
   it('aggregates recent status from request buckets and preserves the current status message', () => {
     const viewModel = buildAccountDetailViewModel(
       makeRow({

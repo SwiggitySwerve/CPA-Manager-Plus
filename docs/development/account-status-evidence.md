@@ -14,7 +14,9 @@ the existing health label and reset display in the list. The full provider messa
 and proxy retry time remain in account details. Unknown limits and unrelated
 errors remain visible in both list layouts. Request history stays separate from current provider
 status. Quota-lookup errors stay visible even when no quota windows are available
-or cached windows remain. Messages are readable provider errors, without truncation. An unavailable
+or cached windows remain. The quota-refresh evidence classifier detects these
+failures independently of the capacity status derived from cached windows.
+Messages are readable provider errors, without truncation. An unavailable
 credential's valid `next_retry_after` is shown as the proxy's retry time; it is not a
 promise that the provider will accept the next request. Quota resets, credential
 state, and routing remain owned by the provider and proxy.

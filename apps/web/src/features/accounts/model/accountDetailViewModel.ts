@@ -1196,9 +1196,10 @@ export const buildOverviewRecentStatus = (
     (credentialStatusKind === 'credential_failure'
       ? isAccountCredentialStatusProblemCurrent(row, requestEvidence)
       : credentialStatusKind === 'transient_failure');
+  const quotaRefreshKind = classifyAccountQuotaRefreshEvidence(row);
   const hasQuotaRefreshError =
-    row.quota.status === 'error' &&
-    (classifyAccountQuotaRefreshEvidence(row) !== 'credential_failure' ||
+    quotaRefreshKind !== 'none' &&
+    (quotaRefreshKind !== 'credential_failure' ||
       isAccountQuotaRefreshProblemCurrent(row, requestEvidence));
   const statusMessage = hasProblemStatusMessage ? getProviderErrorMessage(row.statusMessage) : '';
   const quotaLabelExplainsStatus =

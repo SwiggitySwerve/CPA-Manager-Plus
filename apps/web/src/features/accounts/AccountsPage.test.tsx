@@ -10636,11 +10636,16 @@ describe('AccountsPage replacement flows', () => {
     expect(diagnostic.findByType('time').props.dateTime).toBe('2026-11-02T06:19:29.000Z');
   });
 
-  it.each(['grid', 'table'])('shows quota lookup failures in %s view and account details', async (view) => {
+  it.each(['grid', 'table'].flatMap((view) =>
+    [null, 20, 95, 100].map((usedPercent) => ({ view, usedPercent }))
+  ))('shows quota lookup failures in $view view and account details with cached usage $usedPercent', async ({ view, usedPercent }) => {
     const file = makeCodexFile('quota-error.json', 'auth-error', 'error@example.com');
     mocks.files = [file];
     mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
-      status: 'error', windows: [], error: '429 Too many requests', errorStatus: 429,
+      status: 'error',
+      windows: usedPercent === null ? [] : [makeCodexQuotaWindow({ usedPercent })],
+      error: '429 Too many requests',
+      errorStatus: 429,
     });
     const renderer = await renderAccountsPage();
     await flushPromises();

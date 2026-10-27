@@ -23,5 +23,22 @@
     "errors": [],
     "httpFailures": [],
     "overflow": false
+  },
+  "cached_refresh_failure": {
+    "injected_in_browser_only": true,
+    "views": [
+      {
+        "view": "table",
+        "error": "Refresh failed: 503 Quota refresh unavailable (browser verification)",
+        "cachedWeekly": true
+      },
+      {
+        "view": "grid",
+        "error": "Refresh failed: 503 Quota refresh unavailable (browser verification)",
+        "cachedWeekly": true
+      }
+    ],
+    "detail_error": "Refresh failed: 503 Quota refresh unavailable (browser verification)",
+    "injected_requests": 1
   }
 }
