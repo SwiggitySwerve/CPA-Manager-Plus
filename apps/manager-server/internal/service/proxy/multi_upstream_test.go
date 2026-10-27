@@ -134,18 +134,36 @@ func TestMergedAuthFilesKeepsPrimaryEntryOnCollisionAndSaysSo(t *testing.T) {
 	}
 }
 
-func TestMergedAuthFilesSurvivesAnExtraUpstreamOutage(t *testing.T) {
+func TestMergedAuthFilesRejectsAnIncompleteInventory(t *testing.T) {
 	primary := newFakeCPA(t, 200, codexFile)
 	extra := newFakeCPA(t, 500)
 	svc := newMultiService(t, primary, extra)
 
 	w := serve(svc, httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil))
 
-	if files := listedFiles(t, w); len(files) != 1 {
-		t.Fatalf("files = %v, want only the primary's", files)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 instead of a successful partial inventory", w.Code)
 	}
 	if got := w.Header().Get("X-CPAMP-Upstream-Errors"); !strings.Contains(got, extra.URL) {
 		t.Fatalf("error header = %q, want it to name the failed upstream", got)
+	}
+}
+
+func TestMergedAuthFilesRejectsMalformedExtraInventory(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"files":{}}`} {
+		t.Run(body, func(t *testing.T) {
+			primary := newFakeCPA(t, 200, codexFile)
+			extra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			t.Cleanup(extra.Close)
+			svc := newMultiService(t, primary).WithExtraUpstreams([]string{extra.URL})
+			response := serve(svc, httptest.NewRequest(http.MethodGet, authFilesPath, nil))
+			if response.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502 for malformed inventory", response.Code)
+			}
+		})
 	}
 }
 

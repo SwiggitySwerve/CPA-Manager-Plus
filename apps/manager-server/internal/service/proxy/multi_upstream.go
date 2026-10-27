@@ -103,10 +103,13 @@ func fetchAuthFiles(ctx context.Context, base, managementKey, rawQuery string) a
 		listing.err = fmt.Errorf("decode auth-files: %w", err)
 		return listing
 	}
-	if raw, ok := listing.top["files"]; ok {
-		if err := json.Unmarshal(raw, &listing.files); err != nil {
-			listing.err = fmt.Errorf("decode auth-files.files: %w", err)
-		}
+	raw, ok := listing.top["files"]
+	if !ok {
+		listing.err = fmt.Errorf("decode auth-files: missing files inventory")
+		return listing
+	}
+	if err := json.Unmarshal(raw, &listing.files); err != nil {
+		listing.err = fmt.Errorf("decode auth-files.files: %w", err)
 	}
 	return listing
 }
@@ -215,14 +218,16 @@ func (s *Service) serveMergedAuthFiles(w http.ResponseWriter, r *http.Request, b
 			failures = append(failures, listing.base)
 		}
 	}
+	if len(failures) > 0 {
+		w.Header().Set(upstreamErrorsHeader, strings.Join(failures, ","))
+		writeError(w, http.StatusBadGateway, fmt.Errorf("account inventory is incomplete: %d proxy instance(s) unavailable; retry when all instances are reachable", len(failures)))
+		return
+	}
 	s.owners.remember(listings)
 	merged, conflicts := mergeAuthFiles(listings)
 	if len(conflicts) > 0 {
 		log.Printf("proxy: credentials present on more than one upstream, using the first: %s", strings.Join(conflicts, ", "))
 		w.Header().Set(upstreamConflictsHeader, strings.Join(conflicts, ","))
-	}
-	if len(failures) > 0 {
-		w.Header().Set(upstreamErrorsHeader, strings.Join(failures, ","))
 	}
 	top := listings[0].top
 	filesJSON, err := json.Marshal(merged)
