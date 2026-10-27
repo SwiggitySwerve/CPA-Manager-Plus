@@ -1,0 +1,553 @@
+{
+  "phase": "after",
+  "viewports": [
+    {
+      "width": 1366,
+      "rows": [
+        {
+          "gridWidth": 165,
+          "columns": "165px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 165,
+              "height": 89,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 0,
+              "y": 99,
+              "width": 165,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 165,
+          "columns": "165px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0,
+              "width": 165,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 165,
+          "columns": "165px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 165,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 0,
+              "y": 65,
+              "width": 165,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 165,
+          "columns": "165px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 165,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 0,
+              "y": 65,
+              "width": 165,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "iguana-necktie",
+              "x": 0,
+              "y": 147,
+              "width": 165,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 165,
+          "columns": "165px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0,
+              "width": 165,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        }
+      ],
+      "violations": []
+    },
+    {
+      "width": 1440,
+      "rows": [
+        {
+          "gridWidth": 215.125,
+          "columns": "215.125px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 215.125,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 0,
+              "y": 82,
+              "width": 215.125,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 215.125,
+          "columns": "215.125px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0,
+              "width": 215.125,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 215.125,
+          "columns": "215.125px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 215.125,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 0,
+              "y": 65,
+              "width": 215.125,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 215.125,
+          "columns": "215.125px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 215.125,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 0,
+              "y": 65,
+              "width": 215.125,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "iguana-necktie",
+              "x": 0,
+              "y": 147,
+              "width": 215.125,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 215.125,
+          "columns": "215.125px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0,
+              "width": 215.125,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        }
+      ],
+      "violations": []
+    },
+    {
+      "width": 1920,
+      "rows": [
+        {
+          "gridWidth": 461.234375,
+          "columns": "225.609px 225.625px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 5,
+              "width": 225.609375,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 235.609375,
+              "y": 5,
+              "width": 225.625,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 461.234375,
+          "columns": "225.609px 225.609px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0.75,
+              "width": 461.234375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 461.234375,
+          "columns": "225.609px 225.625px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 5,
+              "width": 225.609375,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 235.609375,
+              "y": 5,
+              "width": 225.625,
+              "height": 72,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 461.234375,
+          "columns": "225.609px 225.625px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 225.609375,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 235.609375,
+              "y": 0,
+              "width": 225.625,
+              "height": 72,
+              "overflow": false
+            },
+            {
+              "key": "iguana-necktie",
+              "x": 0,
+              "y": 82,
+              "width": 461.234375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 461.234375,
+          "columns": "225.609px 225.609px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0.75,
+              "width": 461.234375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        }
+      ],
+      "violations": []
+    },
+    {
+      "width": 2560,
+      "rows": [
+        {
+          "gridWidth": 791.59375,
+          "columns": "390.797px 390.797px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 13.5,
+              "width": 390.796875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 400.796875,
+              "y": 13.5,
+              "width": 390.796875,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 791.59375,
+          "columns": "390.797px 390.797px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0.75,
+              "width": 791.59375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 791.59375,
+          "columns": "390.797px 390.797px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 13.5,
+              "width": 390.796875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 400.796875,
+              "y": 13.5,
+              "width": 390.796875,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 791.59375,
+          "columns": "390.797px 390.797px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 390.796875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 400.796875,
+              "y": 0,
+              "width": 390.796875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "iguana-necktie",
+              "x": 0,
+              "y": 65,
+              "width": 791.59375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 791.59375,
+          "columns": "390.797px 390.797px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0.75,
+              "width": 791.59375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        }
+      ],
+      "violations": []
+    },
+    {
+      "width": 3440,
+      "rows": [
+        {
+          "gridWidth": 1187.09375,
+          "columns": "588.547px 588.547px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 13.5,
+              "width": 588.546875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 598.546875,
+              "y": 13.5,
+              "width": 588.546875,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 1187.09375,
+          "columns": "588.547px 588.547px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0.75,
+              "width": 1187.09375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 1187.09375,
+          "columns": "588.547px 588.547px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 13.5,
+              "width": 588.546875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 598.546875,
+              "y": 13.5,
+              "width": 588.546875,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 1187.09375,
+          "columns": "588.547px 588.547px",
+          "windows": [
+            {
+              "key": "five-hour",
+              "x": 0,
+              "y": 0,
+              "width": 588.546875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "seven-day",
+              "x": 598.546875,
+              "y": 0,
+              "width": 588.546875,
+              "height": 55,
+              "overflow": false
+            },
+            {
+              "key": "iguana-necktie",
+              "x": 0,
+              "y": 65,
+              "width": 1187.09375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        },
+        {
+          "gridWidth": 1187.09375,
+          "columns": "588.547px 588.547px",
+          "windows": [
+            {
+              "key": "weekly",
+              "x": 0,
+              "y": 0.75,
+              "width": 1187.09375,
+              "height": 55,
+              "overflow": false
+            }
+          ]
+        }
+      ],
+      "violations": []
+    }
+  ],
+  "emptyState": {
+    "gridWidth": 791.59375,
+    "labelWidth": 791.59375,
+    "leftOffset": 0,
+    "centerOffset": 0
+  },
+  "mobileOverflow": false,
+  "errors": []
+}

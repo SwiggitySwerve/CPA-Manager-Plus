@@ -1687,6 +1687,7 @@
 }
 
 .accountCardBusiness {
+  container: account-quota / inline-size;
   display: flex;
   justify-content: center;
   flex-direction: column;
@@ -1931,9 +1932,7 @@
 
 .quotaWindowGrid {
   display: grid;
-  // Windows (e.g. 5h + weekly) sit side by side only when there is room; otherwise
-  // they stack instead of overlapping and clipping the remaining-percent labels.
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-content: center;
   gap: 10px;
   position: relative;
@@ -1941,6 +1940,15 @@
   min-width: 0;
 }
 
+// Keep the same two tracks in every wide cell. Auto-fit retains extra tracks
+// when an allowance spans the row, squeezing the windows above it.
+@container account-quota (min-width: 310px) {
+  .quotaWindowGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.quotaWindowGrid > .quotaEmptyState,
 .quotaWindowGrid > .quotaWindowCard:only-child,
 .quotaWindowGrid > .quotaWindowCard:nth-child(3):last-child,
 .quotaWindowGrid > .quotaWindowCard:nth-child(5):last-child {
