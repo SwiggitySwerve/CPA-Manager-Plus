@@ -253,6 +253,12 @@ func accountWindowEventSourceSQL(windows []AccountWindowUsageQuery, coverageEven
 }
 
 func accountWindowCanUseDaily(window AccountWindowUsageQuery) bool {
+	if normalizeWindowProvider(window.AuthProviderSnapshot) == "claude" && window.LegacyAccountKeyChecked {
+		primary, legacy := accountWindowKeys(window)
+		if legacy != primary {
+			return false
+		}
+	}
 	authFile := strings.TrimSpace(window.AuthFileSnapshot)
 	authIndex := strings.TrimSpace(window.AuthIndex)
 	if authFile == "" || authIndex == "" {

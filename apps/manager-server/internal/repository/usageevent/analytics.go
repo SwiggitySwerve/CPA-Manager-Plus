@@ -239,9 +239,9 @@ type AccountWindowUsageQuery struct {
 	AuthProjectIDSnapshot string
 	Source                string
 	AuthIndex             string
-	// LegacyAccountKey is populated only after the shared Codex identity
+	// LegacyAccountKey is populated only after the shared identity
 	// compatibility check. LegacyAccountKeyChecked distinguishes an explicitly
-	// blocked check from a non-Codex/legacy target that needs no compatibility
+	// blocked check from a target that needs no compatibility
 	// lookup.
 	LegacyAccountKey        string
 	LegacyAccountKeyChecked bool
@@ -1713,7 +1713,7 @@ order by w.request_index, max(e.timestamp_ms) desc`, args...)
 }
 
 // ResolveAccountWindowLegacyKeys prepares account-window targets with the
-// same fail-closed Codex legacy compatibility decision used by account
+// same fail-closed legacy compatibility decision used by account
 // history. The returned slice is a copy and can safely be used as a query
 // snapshot-local representation.
 func ResolveAccountWindowLegacyKeys(
@@ -1728,15 +1728,24 @@ func ResolveAccountWindowLegacyKeys(
 	})
 	legacyOwners := make(map[string]string)
 	legacyConflicts := make(map[string]struct{})
+	identityTargets := make([]usageidentity.Fields, len(resolved))
+	for index, window := range resolved {
+		identityTargets[index] = accountWindowIdentityFields(window)
+	}
 	for index := range resolved {
 		window := &resolved[index]
-		if !codexLegacyWindowTarget(*window) {
+		if !codexLegacyWindowTarget(*window) && normalizeIdentityProvider(window.AuthProviderSnapshot) != "claude" {
 			continue
 		}
-		cacheKey := codexLegacyWindowCacheKey(*window)
+		window.LegacyAccountKeyChecked = true
+		window.LegacyAccountKey = ""
+		if usageidentity.ClaudeLegacyTargetConflicts(identityTargets[index], identityTargets) {
+			continue
+		}
+		cacheKey := accountWindowLegacyCacheKey(*window)
 		result, ok := cache[cacheKey]
 		if !ok {
-			key, allowed, err := ResolveCodexLegacyAccountKey(ctx, queryer, accountWindowIdentityFields(*window))
+			key, allowed, err := ResolveLegacyAccountKey(ctx, queryer, identityTargets[index])
 			if err != nil {
 				return nil, err
 			}
@@ -1746,14 +1755,13 @@ func ResolveAccountWindowLegacyKeys(
 			}{key: key, allowed: allowed}
 			cache[cacheKey] = result
 		}
-		window.LegacyAccountKeyChecked = true
 		if !result.allowed || result.key == "" {
 			continue
 		}
 		if _, conflicted := legacyConflicts[result.key]; conflicted {
 			continue
 		}
-		ownerKey := codexLegacyOwnerKey(*window)
+		ownerKey := accountWindowLegacyOwnerKey(*window)
 		if owner, ok := legacyOwners[result.key]; ok && owner != ownerKey {
 			legacyConflicts[result.key] = struct{}{}
 			continue
@@ -1772,7 +1780,11 @@ func ResolveAccountWindowLegacyKeys(
 	return resolved, nil
 }
 
-func codexLegacyOwnerKey(window AccountWindowUsageQuery) string {
+func accountWindowLegacyOwnerKey(window AccountWindowUsageQuery) string {
+	if normalizeIdentityProvider(window.AuthProviderSnapshot) == "claude" {
+		key, _ := usageidentity.AccountKey(accountWindowIdentityFields(window))
+		return key
+	}
 	member, _ := usageidentity.NormalizeCodexMemberSnapshot(window.AccountSnapshot)
 	return strings.Join([]string{
 		normalizeIdentityProvider(window.AuthProviderSnapshot),
@@ -1788,7 +1800,7 @@ func codexLegacyWindowTarget(window AccountWindowUsageQuery) bool {
 		memberOK
 }
 
-func codexLegacyWindowCacheKey(window AccountWindowUsageQuery) string {
+func accountWindowLegacyCacheKey(window AccountWindowUsageQuery) string {
 	return strings.Join([]string{
 		normalizeIdentityProvider(window.AuthProviderSnapshot),
 		strings.TrimSpace(window.AuthAccountIDSnapshot),

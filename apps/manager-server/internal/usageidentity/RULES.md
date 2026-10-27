@@ -33,7 +33,22 @@ Email alone and an auth index alone never authorize an alias. Missing evidence
 leaves the original source bucket unassigned; it does not justify rewriting raw
 events or expanding identity rules. The service retains its alias collision and
 concurrent-insert fences. Codex keeps its existing member/workspace compatibility
-resolver. Account-window and recent-request identity rules are unchanged.
+resolver. Recent-request identity rules are unchanged.
+
+Account-history and account-window readers call the same
+`usageevent.ResolveLegacyAccountKey` proof. Window readers pass their existing
+transaction, so identity evidence and totals share a snapshot. Current window
+targets are checked together for index collisions; aliases from earlier reads
+are cleared and revalidated, never accepted as caller authority.
+
+For an approved Claude legacy alias, window reads bypass the daily filename join
+and use the exact canonical keys in projection rows plus any raw tail. This
+applies to the whole requested window, including full days and boundary edges.
+The daily table's filename join cannot represent the masked-source alias, and
+combining its totals with those same projected rows would double count. This
+narrow bypass trades the daily aggregation speed for correct attribution. Claude
+windows without an approved alias, other providers, and Codex retain their daily
+fast paths. No projection or rollup rebuild is needed because keys are unchanged.
 
 The repository keeps distinct source/hash pairs when collecting evidence, so a
 valid hash cannot hide a conflicting or missing hash on another event. It
@@ -46,3 +61,10 @@ from usage through the repository to usageidentity, without a reverse import.
 immutability. `TestAccountHistoryClaudeSourceAlias` checks totals, repeated reads,
 history bounds, and credential isolation through the service. Existing Codex
 identity and monitoring tests remain regression coverage.
+
+`TestClaudeAccountWindowLegacyAliasAcrossReadPaths` compares raw, partial
+projection/raw-tail, complete projection/daily, and service raw-fallback reads
+for short intervals, full days, and full days with partial edges. It checks the
+exact three-call/500713-token recovery, half-open boundaries, repeated targets,
+current-target conflicts, source/hash conflicts, stale supplied aliases, and
+unchanged raw exports.
