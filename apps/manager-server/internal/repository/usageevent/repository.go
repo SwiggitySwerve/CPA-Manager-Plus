@@ -20,6 +20,7 @@ type Repository interface {
 	InsertBatch(ctx context.Context, events []model.UsageEvent) (model.InsertResult, error)
 	ExistingEventHashes(ctx context.Context, hashes []string) (map[string]struct{}, error)
 	ResolveCodexLegacyAccountKey(ctx context.Context, fields usageidentity.Fields) (string, bool, error)
+	ResolveLegacyAccountKey(ctx context.Context, fields usageidentity.Fields) (string, bool, error)
 	ListRecent(ctx context.Context, limit int) ([]model.UsageEvent, error)
 	ModelUsageSummary(ctx context.Context, limit int) (model.ModelUsageSummary, error)
 	BackfillResponseMetadata(ctx context.Context, batchLimit int) (int, error)

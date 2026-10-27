@@ -1802,6 +1802,10 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 	legacyConflicts := make(map[string]struct{})
 	targetKeys := make([]string, len(req.Accounts))
 	validTargets := make([]bool, len(req.Accounts))
+	identityTargets := make([]usageidentity.Fields, len(req.Accounts))
+	for index, account := range req.Accounts {
+		identityTargets[index] = accountHistoryIdentityFields(account)
+	}
 	latestRequestTargets := make([]store.LatestAccountRequestQuery, 0, len(req.Accounts))
 	for index, account := range req.Accounts {
 		key, valid := accountHistoryTargetKey(account)
@@ -1810,7 +1814,12 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 		if valid {
 			keys = append(keys, key)
 			stableKeys = append(stableKeys, key)
-			legacyKey, allowed, err := s.store.UsageEvents.ResolveCodexLegacyAccountKey(ctx, accountHistoryIdentityFields(account))
+			var legacyKey string
+			var allowed bool
+			var err error
+			if !usageidentity.ClaudeLegacyTargetConflicts(identityTargets[index], identityTargets) {
+				legacyKey, allowed, err = s.store.UsageEvents.ResolveLegacyAccountKey(ctx, identityTargets[index])
+			}
 			if err != nil {
 				return AccountHistoryResponse{}, err
 			}
