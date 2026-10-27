@@ -542,6 +542,12 @@
       "violations": []
     }
   ],
+  "emptyState": {
+    "gridWidth": 791.59375,
+    "labelWidth": 791.59375,
+    "leftOffset": 0,
+    "centerOffset": 0
+  },
   "mobileOverflow": false,
   "errors": []
 }
