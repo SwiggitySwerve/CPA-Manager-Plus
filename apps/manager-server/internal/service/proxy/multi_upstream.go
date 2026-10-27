@@ -270,7 +270,8 @@ func (s *Service) ownerOf(ctx context.Context, bases []string, managementKey str
 	fresh := time.Since(s.owners.fetchedAt) < ownerCacheTTL
 	base := lookup()
 	s.owners.mu.Unlock()
-	if fresh {
+	// A fresh cache is trusted for what it knows; a key it lacks may name a credential created since.
+	if fresh && base != "" {
 		return base
 	}
 	s.owners.remember(fetchAllAuthFiles(ctx, bases, managementKey, ""))

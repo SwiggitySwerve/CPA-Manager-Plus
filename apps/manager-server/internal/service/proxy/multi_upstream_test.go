@@ -380,3 +380,27 @@ func TestModelListPassesThroughWithoutExtraUpstreams(t *testing.T) {
 		t.Fatalf("models = %s", got)
 	}
 }
+
+func TestACredentialCreatedAfterTheLastListingIsStillRoutedToItsOwner(t *testing.T) {
+	var created atomic.Bool
+	primary := newFakeCPA(t, 200, codexFile)
+	extra := newFakeCPA(t, 200, claudeFile)
+	fresh := map[string]any{"name": "fresh.json", "auth_index": "fresh-idx", "provider": "claude"}
+	extra.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		files := []map[string]any{claudeFile}
+		if created.Load() {
+			files = append(files, fresh)
+		}
+		extra.last.Store(r.Method + " " + r.URL.RequestURI())
+		_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
+	})
+	svc := newMultiService(t, primary, extra)
+
+	serve(svc, httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)) // fills the owner cache
+	created.Store(true)                                                               // e.g. just uploaded
+	serve(svc, httptest.NewRequest(http.MethodDelete, "/v0/management/auth-files?name=fresh.json", nil))
+
+	if got := extra.lastRequest(); !strings.HasPrefix(got, "DELETE") {
+		t.Fatalf("delete of a file created inside the cache window reached the extra as %q, want DELETE", got)
+	}
+}
