@@ -1948,6 +1948,7 @@
     "detail_overview_recent_status_timeline_hint": "每段 10 分鐘",
     "detail_overview_recent_status_empty": "最近約 200 分鐘沒有請求記錄。",
     "detail_overview_recent_status_message": "目前狀態說明",
+    "detail_overview_retry_at": "代理可重試時間：{{time}}",
     "detail_overview_activity_title": "請求活動",
     "detail_overview_activity_scope_7d": "最近 {{days}} 天 · 請求監控",
     "detail_overview_activity_scope_recent": "近期快照 · 回退資料",

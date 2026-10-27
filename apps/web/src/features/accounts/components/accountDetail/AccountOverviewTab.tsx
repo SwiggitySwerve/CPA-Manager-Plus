@@ -240,7 +240,12 @@ export function AccountOverviewTab({ detailView, getHealthStatusClass }: Account
           </div>
         ) : null}
 
-        <AccountStatusMessage message={recentStatus.statusMessage} variant="detail" />
+        <AccountStatusMessage
+          message={recentStatus.statusMessage}
+          retryAtMs={recentStatus.retryAtMs}
+          quotaError={recentStatus.quotaError}
+          variant="detail"
+        />
       </section>
 
       <div className={styles.overviewCardGrid}>

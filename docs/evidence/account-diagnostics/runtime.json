@@ -1,0 +1,76 @@
+{
+  "verified_at": "2026-10-27T05:21:09.537638+00:00",
+  "accounts": [
+    {
+      "account": "gpt-1",
+      "status": "error",
+      "unavailable": true,
+      "message": "The usage limit has been reached",
+      "retry_at": "2026-11-02T14:19:29.000297448+08:00",
+      "http_statuses": [
+        429
+      ],
+      "quota_signals": {
+        "X-Codex-Primary-Used-Percent": "100",
+        "X-Codex-Primary-Window-Minutes": "10080"
+      }
+    },
+    {
+      "account": "gpt-2",
+      "status": "active",
+      "unavailable": false,
+      "message": "",
+      "retry_at": null,
+      "http_statuses": [],
+      "quota_signals": {
+        "X-Codex-Primary-Used-Percent": "52",
+        "X-Codex-Primary-Window-Minutes": "10080"
+      }
+    },
+    {
+      "account": "claude-1",
+      "status": "error",
+      "unavailable": true,
+      "message": "This request would exceed your account's rate limit. Please try again later.",
+      "retry_at": "2026-10-27T22:00:17.00032777+08:00",
+      "http_statuses": [
+        429
+      ],
+      "quota_signals": {
+        "Anthropic-Ratelimit-Unified-7d-Status": "rejected",
+        "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0",
+        "Anthropic-Ratelimit-Unified-Overage-Disabled-Reason": "org_level_disabled"
+      }
+    },
+    {
+      "account": "claude-2",
+      "status": "error",
+      "unavailable": true,
+      "message": "This request would exceed your account's rate limit. Please try again later.",
+      "retry_at": "2026-11-01T15:00:17.000425927+08:00",
+      "http_statuses": [
+        429
+      ],
+      "quota_signals": {
+        "Anthropic-Ratelimit-Unified-7d-Status": "allowed_warning",
+        "Anthropic-Ratelimit-Unified-7d-Utilization": "0.99",
+        "Anthropic-Ratelimit-Unified-Overage-Disabled-Reason": "org_level_disabled"
+      }
+    },
+    {
+      "account": "claude-3",
+      "status": "error",
+      "unavailable": true,
+      "message": "This request would exceed your account's rate limit. Please try again later.",
+      "retry_at": "2026-10-29T22:00:30.000299989+08:00",
+      "http_statuses": [
+        429
+      ],
+      "quota_signals": {
+        "Anthropic-Ratelimit-Unified-7d-Status": "rejected",
+        "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0",
+        "Anthropic-Ratelimit-Unified-Overage-Disabled-Reason": "org_level_disabled"
+      }
+    }
+  ]
+}

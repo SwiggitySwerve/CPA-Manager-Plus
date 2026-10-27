@@ -25,6 +25,7 @@ import {
 } from './accountListPresentation';
 import {
   isConfirmedPaidXaiPlan,
+  readAuthFileNextRetryAtMs,
   summarizeGroupedQuotaAvailability,
 } from './accountQuotaSummary';
 import {
@@ -50,10 +51,12 @@ import { getPlanPresentation, resolveAuthFilePlanType, type PlanPresentation } f
 import { buildAccountSubscriptionPresentation } from './accountSubscriptionPresentation';
 import {
   classifyAccountCredentialStatusEvidence,
+  classifyAccountQuotaRefreshEvidence,
   getAccountRequestCredentialEvidence,
   isAccountCredentialStatusProblemCurrent,
   isAccountInspectionAuthenticationFailure,
   isAccountInspectionHealthyEvidence,
+  isAccountQuotaRefreshProblemCurrent,
   isAccountRequestCredentialEvidenceCurrent,
   isAccountRequestHealthEvidenceCurrent,
   mergeAccountRequestEvidenceInputs,
@@ -262,6 +265,8 @@ export interface AccountDetailOverviewRecentStatus {
   successRate: number | null;
   recentRequests: RecentRequestBucket[];
   statusMessage: string;
+  retryAtMs: number | null;
+  quotaError: string | null;
 }
 
 export interface AccountDetailOverviewActivity {
@@ -1190,6 +1195,10 @@ export const buildOverviewRecentStatus = (
     (credentialStatusKind === 'credential_failure'
       ? isAccountCredentialStatusProblemCurrent(row, requestEvidence)
       : credentialStatusKind === 'transient_failure');
+  const hasQuotaRefreshError =
+    row.quota.status === 'error' &&
+    (classifyAccountQuotaRefreshEvidence(row) !== 'credential_failure' ||
+      isAccountQuotaRefreshProblemCurrent(row, requestEvidence));
 
   return {
     success: totals.success,
@@ -1197,6 +1206,14 @@ export const buildOverviewRecentStatus = (
     successRate: total > 0 ? (totals.success / total) * 100 : null,
     recentRequests,
     statusMessage: hasProblemStatusMessage ? getProviderErrorMessage(row.statusMessage) : '',
+    retryAtMs:
+      hasProblemStatusMessage && row.raw.unavailable === true
+        ? readAuthFileNextRetryAtMs(row.raw)
+        : null,
+    quotaError: hasQuotaRefreshError
+      ? getProviderErrorMessage(row.quota.error) ||
+        (row.quota.errorStatus ? `HTTP ${row.quota.errorStatus}` : '')
+      : null,
   };
 };
 

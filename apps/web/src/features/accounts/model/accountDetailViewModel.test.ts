@@ -2682,6 +2682,21 @@ describe('accountDetailViewModel', () => {
     expect(viewModel.overview.recentStatus.statusMessage).toBe('Please try again later.');
   });
 
+  it.each([
+    { unavailable: true, retry: '2026-10-29T14:00:30Z', expected: 1793282430000 },
+    { unavailable: true, retry: 'invalid', expected: null },
+    { unavailable: true, retry: '0001-01-01T00:00:00Z', expected: null },
+    { unavailable: true, retry: undefined, expected: null },
+    { unavailable: false, retry: '2026-10-29T14:00:30Z', expected: null },
+  ])('uses only valid retry times for unavailable accounts: $retry, $unavailable', ({ unavailable, retry, expected }) => {
+    const row = makeRow({
+      statusMessage: 'usage_limit_reached',
+      raw: { ...makeRow().raw, unavailable, next_retry_after: retry },
+    });
+    expect(buildAccountDetailViewModel(row).overview.recentStatus.retryAtMs).toBe(expected);
+    expect(buildAccountDetailViewModel({ ...row, statusMessage: '' }).overview.recentStatus.retryAtMs).toBeNull();
+  });
+
   it('omits neutral or superseded raw status messages from the current overview diagnosis', () => {
     const unavailableQuota = {
       status: 'unknown' as const,

@@ -1954,6 +1954,7 @@
     "detail_overview_recent_status_timeline_hint": "10 минут на интервал",
     "detail_overview_recent_status_empty": "Примерно за последние 200 минут запросов не было.",
     "detail_overview_recent_status_message": "Описание текущего состояния",
+    "detail_overview_retry_at": "Повтор через прокси после: {{time}}",
     "detail_overview_activity_title": "Активность запросов",
     "detail_overview_activity_scope_7d": "Последние {{days}} дней · мониторинг запросов",
     "detail_overview_activity_scope_recent": "Недавний снимок · резервные данные",

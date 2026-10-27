@@ -206,6 +206,9 @@ const readTimestampMs = (value: unknown): number | null => {
   return isValidQuotaResetAtMs(parsed) ? parsed : null;
 };
 
+export const readAuthFileNextRetryAtMs = (file: AuthFileItem): number | null =>
+  readTimestampMs(file.next_retry_after);
+
 export const readAuthFileCreatedAtMs = (file: AuthFileItem): number | null => {
   const candidates = [
     file['createdAtMs'],

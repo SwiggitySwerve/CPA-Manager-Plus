@@ -10546,19 +10546,21 @@ describe('AccountsPage replacement flows', () => {
     ].forEach((key) => expect(overviewText).not.toContain(key));
   });
 
-  it('shows the same readable provider failure in cards and account details', async () => {
+  it.each(['grid', 'table'])('shows the same readable provider failure in %s view and account details', async (view) => {
     const message = "This request would exceed your account's rate limit. Please try again later.";
     const file = {
       ...makeCodexFile('limited.json', 'auth-limited', 'limited@example.com'),
       type: 'claude',
       provider: 'claude',
       status_message: JSON.stringify({ error: { type: 'rate_limit_error', message } }),
+      unavailable: true,
+      next_retry_after: '2026-10-29T14:00:30Z',
     } as AuthFileItem;
     mocks.files = [file];
     const renderer = await renderAccountsPage();
     await flushPromises();
     await act(async () => {
-      renderer.root.findByProps({ 'aria-label': 'accounts.view_mode_grid' }).props.onClick();
+      renderer.root.findByProps({ 'aria-label': `accounts.view_mode_${view}` }).props.onClick();
     });
     await flushPromises();
 
@@ -10566,6 +10568,7 @@ describe('AccountsPage replacement flows', () => {
     const cardMessage = card.findByProps({ 'data-overview-recent-status-message': 'true' });
     expect(readText(cardMessage)).toContain(message);
     expect(readText(cardMessage)).not.toContain('rate_limit_error');
+    expect(cardMessage.findByType('time').props.dateTime).toBe('2026-10-29T14:00:30.000Z');
 
     await act(async () => {
       findDetailButtonByName(renderer, file.name).props.onClick();
@@ -10574,6 +10577,56 @@ describe('AccountsPage replacement flows', () => {
     const overview = renderer.root.findByProps({ 'data-overview-section': 'recent-status' });
     expect(readText(overview.findByProps({ 'data-overview-recent-status-message': 'true' })))
       .toBe(readText(cardMessage));
+  });
+
+  it('keeps the inference quota failure after manually refreshing Codex quota', async () => {
+    const message = 'The usage limit has been reached';
+    const file = {
+      ...makeCodexFile('limited.json', 'auth-limited', 'limited@example.com'),
+      status_message: JSON.stringify({ error: { type: 'usage_limit_reached', message } }),
+      unavailable: true,
+      updated_at: '2026-10-26T23:17:04Z',
+      next_retry_after: '2026-11-02T06:19:29Z',
+    } as AuthFileItem;
+    mocks.files = [file];
+    const quotaFetch = vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      await findAccountCardButtonByAriaLabel(renderer, getAuthFileSelectionKey(file), 'accounts.refresh_quota')
+        .props.onClick({ stopPropagation: vi.fn() });
+    });
+    await flushPromises();
+    expect(quotaFetch).toHaveBeenCalledTimes(1);
+    const diagnostic = findAccountCardByKey(renderer, getAuthFileSelectionKey(file))
+      .findByProps({ 'data-overview-recent-status-message': 'true' });
+    expect(readText(diagnostic)).toContain(message);
+    expect(diagnostic.findByType('time').props.dateTime).toBe('2026-11-02T06:19:29.000Z');
+  });
+
+  it.each(['grid', 'table'])('shows quota lookup failures in %s view and account details', async (view) => {
+    const file = makeCodexFile('quota-error.json', 'auth-error', 'error@example.com');
+    mocks.files = [file];
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'error', windows: [], error: '429 Too many requests', errorStatus: 429,
+    });
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': `accounts.view_mode_${view}` }).props.onClick();
+    });
+    await flushPromises();
+    const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+    expect(readText(card.findByProps({ 'data-account-quota-refresh-error': 'true' })))
+      .toContain('429 Too many requests');
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await flushPromises();
+    const overview = renderer.root.findByProps({ 'data-overview-section': 'recent-status' });
+    expect(readText(overview.findByProps({ 'data-account-quota-refresh-error': 'true' })))
+      .toContain('429 Too many requests');
   });
 
   it('aggregates recent request buckets and shows the current status explanation', async () => {

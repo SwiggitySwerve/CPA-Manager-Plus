@@ -104,8 +104,9 @@ const QUOTA_FAILURE_PATTERNS = [
   /\bcredits?[_ -]?limit[_ -]?(?:exceeded|reached)\b/,
   /\bfree[_ -]?usage[_ -]?(?:depleted|exhausted|limited)\b/,
   /\bfree[_ -]?usage[_ -]?limit[_ -]?(?:exceeded|reached)\b/,
-  /\brate[_ -]?limit(?:ed|[_ -]?(?:exceeded|reached))(?:\b|_)/,
-  /\b(?:usage|billing|spending)[_ -]?limit(?:ed|[_ -]?(?:exceeded|reached))(?:\b|_)/,
+  /\brate[_ -]?limit(?:ed|[_ -]?(?:error|exceeded|reached))(?:\b|_)/,
+  /\bexceed your account's rate limit\b/,
+  /\b(?:usage|billing|spending)[_ -]?limit(?:ed|(?: has been)?[_ -]?(?:exceeded|reached))(?:\b|_)/,
 ] as const;
 
 const REQUEST_FAILURE_PATTERNS = [
@@ -157,7 +158,12 @@ const readStatusCodeFromText = (value: string): number | null => {
   return match ? readStatusCode(match[1]) : null;
 };
 
-const getRawCredentialStatusCode = (row: AccountRow): number | null => {
+type AccountCredentialStatusInput = Pick<
+  AccountRow,
+  'raw' | 'statusMessage' | 'updatedAtMs' | 'rawCredentialStatusSuperseded'
+>;
+
+const getRawCredentialStatusCode = (row: AccountCredentialStatusInput): number | null => {
   if (row.rawCredentialStatusSuperseded) return null;
   const statusCode = getAuthFileCredentialStatusCode(row.raw);
   if (statusCode !== null) return statusCode;
@@ -165,7 +171,7 @@ const getRawCredentialStatusCode = (row: AccountRow): number | null => {
 };
 
 export const classifyAccountCredentialStatusEvidence = (
-  row: AccountRow
+  row: AccountCredentialStatusInput
 ): AccountCredentialStatusEvidenceKind => {
   const statusMessage = normalizeText(row.statusMessage);
   const statusCode = getRawCredentialStatusCode(row);

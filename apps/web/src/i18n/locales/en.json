@@ -1950,6 +1950,7 @@
     "detail_overview_recent_status_timeline_hint": "10 minutes per bucket",
     "detail_overview_recent_status_empty": "No requests were recorded in roughly the last 200 minutes.",
     "detail_overview_recent_status_message": "Current status explanation",
+    "detail_overview_retry_at": "Proxy retry after: {{time}}",
     "detail_overview_activity_title": "Request activity",
     "detail_overview_activity_scope_7d": "Last {{days}} days · request monitoring",
     "detail_overview_activity_scope_recent": "Recent snapshot · fallback",
