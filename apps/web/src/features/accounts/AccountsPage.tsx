@@ -72,6 +72,7 @@ import { useInterval } from '@/hooks/useInterval';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { AccountStatusMessage } from './components/AccountStatusMessage';
 import { getAuthFileIcon, isQuotaRefreshSupportedProvider } from '@/features/authFiles/constants';
 import {
   useAuthFilesData,
@@ -276,6 +277,7 @@ import {
   getAccountOperationalItemIdentityKey,
 } from '@/features/accounts/model/accountOperationalScope';
 import {
+  classifyAccountCredentialStatusEvidence,
   getAccountRequestCredentialEvidence,
   isAccountInspectionStatusEvidenceCurrent,
   isAccountRequestCredentialEvidenceCurrent,
@@ -2890,6 +2892,7 @@ export function AccountsPage() {
     (
       selectionKeys: string[],
       options: {
+        supersedeRawStatusEvidence?: boolean;
         supersedeActionEvidence?: boolean;
         supersedeAuthenticationActionEvidence?: boolean;
         supersedeQuotaActionEvidence?: boolean;
@@ -2922,6 +2925,12 @@ export function AccountsPage() {
             getAuthFileSelectionKey(file),
             {
               ...currentBoundary,
+              rawStatusAtMs:
+                options.supersedeRawStatusEvidence === false ? 0 : currentBoundary.rawStatusAtMs,
+              rawStatusMessages:
+                options.supersedeRawStatusEvidence === false ? [] : currentBoundary.rawStatusMessages,
+              rawStatusCodes:
+                options.supersedeRawStatusEvidence === false ? [] : currentBoundary.rawStatusCodes,
               headerAtMs: 0,
               headerBaselinePending: false,
               actionAtMs: options.supersedeActionEvidence ? currentBoundary.actionAtMs : 0,
@@ -6566,6 +6575,8 @@ export function AccountsPage() {
           }
           const healthyQuota = isKnownHealthyCodexQuota(refreshedQuota);
           invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
+            supersedeRawStatusEvidence:
+              classifyAccountCredentialStatusEvidence(row) === 'credential_failure',
             supersedeAuthenticationActionEvidence: true,
             supersedeQuotaActionEvidence: healthyQuota,
             supersedeCooldownEvidence: healthyQuota,
@@ -9076,7 +9087,7 @@ export function AccountsPage() {
     );
     const overviewRecentStatus = buildOverviewRecentStatus(
       row,
-      null,
+      item.health,
       requestEvidence
     );
     const recentStatusData = statusBarDataFromRecentRequests(overviewRecentStatus.recentRequests);
@@ -9636,20 +9647,11 @@ export function AccountsPage() {
                       <ProviderStatusBar statusData={ctx.recentStatusData} styles={styles} />
                     </div>
 
-                    {ctx.overviewRecentStatus.statusMessage ? (
-                      <div
-                        className={styles.accountGridCardRecentStatusMessage}
-                        data-overview-recent-status-message="true"
-                        title={ctx.overviewRecentStatus.statusMessage}
-                      >
-                        <span className={styles.accountGridCardRecentStatusMessageLabel}>
-                          {t('accounts.detail_overview_recent_status_message')}
-                        </span>
-                        <p className={styles.accountGridCardRecentStatusMessageText}>
-                          {ctx.overviewRecentStatus.statusMessage}
-                        </p>
-                      </div>
-                    ) : null}
+                    <AccountStatusMessage
+                      message={ctx.overviewRecentStatus.listStatusMessage}
+                      retryAtMs={ctx.overviewRecentStatus.retryAtMs}
+                      quotaError={ctx.overviewRecentStatus.quotaError}
+                    />
                   </div>
 
                   <div
@@ -9968,6 +9970,12 @@ export function AccountsPage() {
                   <div className={styles.accountCardRecommendation}>
                     {renderRowActions(row, ctx.item.health.status === 'reauth')}
                   </div>
+                  <AccountStatusMessage
+                    message={ctx.overviewRecentStatus.listStatusMessage}
+                    retryAtMs={ctx.overviewRecentStatus.retryAtMs}
+                    quotaError={ctx.overviewRecentStatus.quotaError}
+                    className={styles.accountCardStatusMessage}
+                  />
                 </article>
               );
             })}

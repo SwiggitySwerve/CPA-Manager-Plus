@@ -1038,12 +1038,21 @@
     color: var(--accounts-text);
     font-size: 11px;
     line-height: 1.35;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
     word-break: break-word;
+  }
+}
+
+.accountCardStatusMessage {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.accountGridCardRecentStatusMessage,
+.overviewRecentStatusMessage {
+  time {
+    color: var(--accounts-muted);
+    font-size: 11px;
+    overflow-wrap: anywhere;
   }
 }
 

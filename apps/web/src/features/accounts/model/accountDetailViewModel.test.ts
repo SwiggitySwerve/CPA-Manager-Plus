@@ -11,6 +11,7 @@ import type {
 import type { AccountRow } from './accountRows';
 import {
   buildAccountDetailViewModel,
+  buildOverviewRecentStatus,
   type AccountDetailQuotaWindowInput,
 } from './accountDetailViewModel';
 import { accountWindowUsageRequestKey } from './accountWindowUsageRows';
@@ -2629,6 +2630,36 @@ describe('accountDetailViewModel', () => {
     );
   });
 
+  it('uses the existing quota label only for explained quota failures while preserving detail evidence', () => {
+    const row = makeRow({ statusMessage: 'The usage limit has been reached' });
+    const knownWeeklyLimit = buildOverviewRecentStatus(row, { status: 'weekly_exhausted' });
+    expect(knownWeeklyLimit.listStatusMessage).toBe('');
+    expect(knownWeeklyLimit.statusMessage).toBe(row.statusMessage);
+    expect(buildOverviewRecentStatus(row, { status: 'limited' }).listStatusMessage).toBe(row.statusMessage);
+    expect(buildOverviewRecentStatus(
+      { ...row, statusMessage: 'upstream unavailable' },
+      { status: 'weekly_exhausted' }
+    ).listStatusMessage).toBe('upstream unavailable');
+  });
+
+  it.each(['error', 'ok', 'low', 'exhausted'] as const)(
+    'keeps authentication freshness checks for quota failures with %s capacity',
+    (status) => {
+      const row = makeRow({
+        quota: { status, error: '401 Unauthorized', errorStatus: 401, fetchedAtMs: 1_000, failedAtMs: 2_000 },
+      });
+      expect(buildAccountDetailViewModel(row).overview.recentStatus.quotaError).toBe('401 Unauthorized');
+      const recovered = buildAccountDetailViewModel(row, {
+        history: makeHistory({
+          latest_request: { timestamp_ms: 3_000, failed: false },
+          recent_requests: [{ timestamp_ms: 3_000, failed: false }],
+          last_seen_ms: 3_000,
+        }),
+      });
+      expect(recovered.overview.recentStatus.quotaError).toBeNull();
+    }
+  );
+
   it('aggregates recent status from request buckets and preserves the current status message', () => {
     const viewModel = buildAccountDetailViewModel(
       makeRow({
@@ -2680,6 +2711,21 @@ describe('accountDetailViewModel', () => {
     }));
 
     expect(viewModel.overview.recentStatus.statusMessage).toBe('Please try again later.');
+  });
+
+  it.each([
+    { unavailable: true, retry: '2026-10-29T14:00:30Z', expected: 1793282430000 },
+    { unavailable: true, retry: 'invalid', expected: null },
+    { unavailable: true, retry: '0001-01-01T00:00:00Z', expected: null },
+    { unavailable: true, retry: undefined, expected: null },
+    { unavailable: false, retry: '2026-10-29T14:00:30Z', expected: null },
+  ])('uses only valid retry times for unavailable accounts: $retry, $unavailable', ({ unavailable, retry, expected }) => {
+    const row = makeRow({
+      statusMessage: 'usage_limit_reached',
+      raw: { ...makeRow().raw, unavailable, next_retry_after: retry },
+    });
+    expect(buildAccountDetailViewModel(row).overview.recentStatus.retryAtMs).toBe(expected);
+    expect(buildAccountDetailViewModel({ ...row, statusMessage: '' }).overview.recentStatus.retryAtMs).toBeNull();
   });
 
   it('omits neutral or superseded raw status messages from the current overview diagnosis', () => {

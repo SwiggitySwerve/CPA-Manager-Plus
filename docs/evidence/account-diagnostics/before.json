@@ -1,0 +1,23 @@
+{
+  "phase": "before",
+  "views": [
+    {
+      "view": "table",
+      "accounts": 5,
+      "messages": 0,
+      "mismatches": 4
+    },
+    {
+      "view": "grid",
+      "accounts": 5,
+      "messages": 3,
+      "mismatches": 1
+    }
+  ],
+  "detail_matches_provider": true,
+  "browser": {
+    "errors": [],
+    "httpFailures": [],
+    "overflow": false
+  }
+}

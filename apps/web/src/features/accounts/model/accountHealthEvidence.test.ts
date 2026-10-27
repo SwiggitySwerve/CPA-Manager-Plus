@@ -110,6 +110,9 @@ describe('accountHealthEvidence', () => {
       'free_usage_exhausted',
       'rate_limit_reached',
       'usage_limit_reached',
+      'The usage limit has been reached',
+      'rate_limit_error',
+      "This request would exceed your account's rate limit. Please try again later.",
     ]) {
       expect(
         classifyAccountRequestEvidence(makeRequest({ failed: true, header_error_code: marker }))

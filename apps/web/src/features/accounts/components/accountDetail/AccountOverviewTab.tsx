@@ -28,6 +28,7 @@ import type {
 } from '@/features/usage-analytics/usageAnalyticsPresentation';
 import { statusBarDataFromRecentRequests } from '@/utils/recentRequests';
 import { AccountDetailFieldValue } from './AccountDetailFieldList';
+import { AccountStatusMessage } from '../AccountStatusMessage';
 import styles from '@/features/accounts/AccountsPage.module.scss';
 
 interface AccountOverviewTabProps {
@@ -104,7 +105,6 @@ export function AccountOverviewTab({ detailView, getHealthStatusClass }: Account
   const { decision, capacity, credential, recentStatus, activity, attention } = detailView.overview;
   const recentStatusData = statusBarDataFromRecentRequests(recentStatus.recentRequests);
   const hasRecentRequests = recentStatusData.totalSuccess + recentStatusData.totalFailure > 0;
-  const hasStatusMessage = Boolean(recentStatus.statusMessage);
   const activityScopeLabel =
     activity.scope === 'monitoring_7d'
       ? t('accounts.detail_overview_activity_scope_7d', { days: activity.scopeDays ?? 7 })
@@ -240,15 +240,12 @@ export function AccountOverviewTab({ detailView, getHealthStatusClass }: Account
           </div>
         ) : null}
 
-        {hasStatusMessage ? (
-          <div
-            className={styles.overviewRecentStatusMessage}
-            data-overview-recent-status-message="true"
-          >
-            <span>{t('accounts.detail_overview_recent_status_message')}</span>
-            <p>{recentStatus.statusMessage}</p>
-          </div>
-        ) : null}
+        <AccountStatusMessage
+          message={recentStatus.statusMessage}
+          retryAtMs={recentStatus.retryAtMs}
+          quotaError={recentStatus.quotaError}
+          variant="detail"
+        />
       </section>
 
       <div className={styles.overviewCardGrid}>

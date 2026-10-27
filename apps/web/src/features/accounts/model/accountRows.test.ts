@@ -3299,6 +3299,34 @@ describe('accountRows', () => {
 
     expect(row.statusMessage).toBe('');
   });
+  it.each([
+    'The usage limit has been reached',
+    JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached' } }),
+    'upstream unavailable',
+  ])('keeps inference failure %s after a successful quota lookup', (statusMessage) => {
+    const file: AuthFileItem = {
+      name: 'limited.codex.json',
+      type: 'codex',
+      authIndex: 'limited',
+      unavailable: true,
+      statusMessage,
+      updatedAtMs: 1_700_000_000_000,
+    };
+    const [row] = buildAccountRows([file], {
+      ...emptyStores(),
+      codexQuota: {
+        [file.name]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          fetchedAtMs: 1_700_000_001_000,
+        },
+      },
+    });
+
+    expect(row).toMatchObject({ statusMessage, rawCredentialStatusSuperseded: false });
+  });
+
   it('suppresses raw status at the inclusive credential-refresh boundary', () => {
     const refreshedAtMs = 1_700_000_010_000;
     const file: AuthFileItem = {

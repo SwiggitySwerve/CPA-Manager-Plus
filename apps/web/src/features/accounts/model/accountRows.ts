@@ -31,6 +31,7 @@ import {
   type AccountQuotaSummary,
 } from '@/features/accounts/model/accountQuotaSummary';
 import {
+  classifyAccountCredentialStatusEvidence,
   getAccountRequestCredentialEvidence,
   hasAccountQuotaLimitEvidence,
   isAccountCredentialStatusProblemCurrent,
@@ -458,6 +459,13 @@ export const buildAccountRows = (
     }).authenticationAtMs;
     const rawStatusMessage = resolveStatusMessage(file);
     const rawStatusCodes = getAuthFileCredentialStatusCodes(file);
+    const rawStatusIsAuthenticationFailure =
+      classifyAccountCredentialStatusEvidence({
+        raw: file,
+        statusMessage: rawStatusMessage,
+        updatedAtMs,
+        rawCredentialStatusSuperseded: false,
+      }) === 'credential_failure';
     const boundarySupersedesRawStatus = (
       boundary: AccountCredentialEvidenceBoundary | undefined
     ): boolean => {
@@ -498,6 +506,8 @@ export const buildAccountRows = (
       boundarySupersedesRawStatus(statusBoundary) ||
       (!hasCapturedRawStatusBoundary &&
         !hasAuthenticationRecoveryBoundary &&
+        // A quota lookup proves authentication, not recovery from an inference failure.
+        rawStatusIsAuthenticationFailure &&
         authenticationAtMs > 0 &&
         updatedAtMs !== null &&
         authenticationAtMs >= updatedAtMs);

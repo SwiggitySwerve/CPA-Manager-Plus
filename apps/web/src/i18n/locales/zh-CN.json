@@ -1948,6 +1948,7 @@
     "detail_overview_recent_status_timeline_hint": "每段 10 分钟",
     "detail_overview_recent_status_empty": "最近约 200 分钟没有请求记录。",
     "detail_overview_recent_status_message": "当前状态说明",
+    "detail_overview_retry_at": "代理可重试时间：{{time}}",
     "detail_overview_activity_title": "请求活动",
     "detail_overview_activity_scope_7d": "最近 {{days}} 天 · 请求监控",
     "detail_overview_activity_scope_recent": "近期快照 · 回退数据",
