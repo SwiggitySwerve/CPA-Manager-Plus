@@ -29,6 +29,8 @@ type Service struct {
 	store                *store.Store
 	authFileMutations    *cpaauthfiles.MutationCoordinator
 	extraUpstreams       []string
+	providerUpstreams    map[string]string
+	oauth                oauthSessions
 	owners               upstreamOwners
 }
 
@@ -195,6 +197,10 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 	}
 	if bases := s.upstreamBases(setup.CPAUpstreamURL); len(bases) > 1 && isAuthFilesListRequest(r) {
 		s.serveMergedAuthFiles(w, r, bases, setup.ManagementKey, writeError)
+		return
+	}
+	if provider := oauthStartProvider(r); provider != "" && useSavedManagementKey && len(s.providerUpstreams) > 0 {
+		s.serveOAuthStart(w, r, setup, provider, writeError)
 		return
 	}
 	setup = s.routeSetup(r, setup)

@@ -41,6 +41,10 @@ func newFakeCPA(t *testing.T, status int, files ...map[string]any) *fakeCPA {
 			_ = json.NewEncoder(w).Encode(map[string]any{"files": files, "observed_at": f.URL})
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "-auth-url") {
+			_, _ = w.Write([]byte(`{"status":"ok","state":"state-of-` + f.URL + `","url":"https://login"}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"from":"` + f.URL + `"}`))
 	}))
 	t.Cleanup(f.Close)

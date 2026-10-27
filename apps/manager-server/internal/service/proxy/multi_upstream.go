@@ -237,6 +237,12 @@ func (s *Service) serveMergedAuthFiles(w http.ResponseWriter, r *http.Request, b
 
 // routeSetup points the request at the upstream that owns the credential it names, or leaves it on the primary.
 func (s *Service) routeSetup(r *http.Request, setup store.Setup) store.Setup {
+	if len(s.providerUpstreams) > 0 {
+		if base := s.oauthRoute(r); base != "" {
+			setup.CPAUpstreamURL = base
+			return setup
+		}
+	}
 	bases := s.upstreamBases(setup.CPAUpstreamURL)
 	if len(bases) < 2 {
 		return setup
@@ -289,14 +295,8 @@ func requestRoutingKeys(r *http.Request) []string {
 	}
 	query := r.URL.Query()
 	add(query.Get("auth_index"), query.Get("authIndex"), query.Get("name"), r.Header.Get(authFilePhysicalNameHeader))
-	if r.Body != nil && r.Method != http.MethodGet && isJSONContentType(r.Header.Get("Content-Type")) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, routingBodyLimitBytes+1))
-		rest := r.Body
-		r.Body = struct {
-			io.Reader
-			io.Closer
-		}{io.MultiReader(bytes.NewReader(body), rest), rest}
-		if err == nil && len(body) <= routingBodyLimitBytes {
+	if r.Method != http.MethodGet && isJSONContentType(r.Header.Get("Content-Type")) {
+		if body, ok := peekRequestBody(r, routingBodyLimitBytes); ok {
 			var payload struct {
 				Name         string          `json:"name"`
 				Names        []string        `json:"names"`
@@ -312,6 +312,21 @@ func requestRoutingKeys(r *http.Request) []string {
 		}
 	}
 	return keys
+}
+
+// peekRequestBody returns up to limit bytes of the body and leaves r.Body readable from the start. ok is false
+// when there is no body, it cannot be read, or it is longer than limit.
+func peekRequestBody(r *http.Request, limit int64) (body []byte, ok bool) {
+	if r.Body == nil {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	rest := r.Body
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(body), rest), rest}
+	return body, err == nil && int64(len(body)) <= limit
 }
 
 type upstreamModels struct {
