@@ -72,6 +72,7 @@ import { useInterval } from '@/hooks/useInterval';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { AccountStatusMessage } from './components/AccountStatusMessage';
 import { getAuthFileIcon, isQuotaRefreshSupportedProvider } from '@/features/authFiles/constants';
 import {
   useAuthFilesData,
@@ -9636,20 +9637,7 @@ export function AccountsPage() {
                       <ProviderStatusBar statusData={ctx.recentStatusData} styles={styles} />
                     </div>
 
-                    {ctx.overviewRecentStatus.statusMessage ? (
-                      <div
-                        className={styles.accountGridCardRecentStatusMessage}
-                        data-overview-recent-status-message="true"
-                        title={ctx.overviewRecentStatus.statusMessage}
-                      >
-                        <span className={styles.accountGridCardRecentStatusMessageLabel}>
-                          {t('accounts.detail_overview_recent_status_message')}
-                        </span>
-                        <p className={styles.accountGridCardRecentStatusMessageText}>
-                          {ctx.overviewRecentStatus.statusMessage}
-                        </p>
-                      </div>
-                    ) : null}
+                    <AccountStatusMessage message={ctx.overviewRecentStatus.statusMessage} />
                   </div>
 
                   <div

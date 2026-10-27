@@ -10546,6 +10546,36 @@ describe('AccountsPage replacement flows', () => {
     ].forEach((key) => expect(overviewText).not.toContain(key));
   });
 
+  it('shows the same readable provider failure in cards and account details', async () => {
+    const message = "This request would exceed your account's rate limit. Please try again later.";
+    const file = {
+      ...makeCodexFile('limited.json', 'auth-limited', 'limited@example.com'),
+      type: 'claude',
+      provider: 'claude',
+      status_message: JSON.stringify({ error: { type: 'rate_limit_error', message } }),
+    } as AuthFileItem;
+    mocks.files = [file];
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': 'accounts.view_mode_grid' }).props.onClick();
+    });
+    await flushPromises();
+
+    const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+    const cardMessage = card.findByProps({ 'data-overview-recent-status-message': 'true' });
+    expect(readText(cardMessage)).toContain(message);
+    expect(readText(cardMessage)).not.toContain('rate_limit_error');
+
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await flushPromises();
+    const overview = renderer.root.findByProps({ 'data-overview-section': 'recent-status' });
+    expect(readText(overview.findByProps({ 'data-overview-recent-status-message': 'true' })))
+      .toBe(readText(cardMessage));
+  });
+
   it('aggregates recent request buckets and shows the current status explanation', async () => {
     mocks.files = [
       {
