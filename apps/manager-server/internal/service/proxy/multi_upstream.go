@@ -313,3 +313,102 @@ func requestRoutingKeys(r *http.Request) []string {
 	}
 	return keys
 }
+
+type upstreamModels struct {
+	base   string
+	status int
+	header http.Header
+	body   []byte
+	err    error
+}
+
+func fetchModels(ctx context.Context, base string, auth http.Header) upstreamModels {
+	out := upstreamModels{base: base}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		out.err = err
+		return out
+	}
+	for _, name := range []string{"Authorization", "X-Api-Key"} {
+		if value := auth.Get(name); value != "" {
+			req.Header.Set(name, value)
+		}
+	}
+	res, err := upstreamHTTPClient.Do(req)
+	if err != nil {
+		out.err = err
+		return out
+	}
+	defer res.Body.Close()
+	out.status, out.header = res.StatusCode, res.Header
+	out.body, out.err = io.ReadAll(io.LimitReader(res.Body, authFilesListLimitBytes))
+	return out
+}
+
+// serveMergedModels answers GET /v1/models with the models of every upstream, using the caller's own API key
+// on each. A model on several upstreams is listed once, from the earlier one. The primary's error is returned
+// unchanged; an extra that fails is left out and named in X-CPAMP-Upstream-Errors.
+func (s *Service) serveMergedModels(w http.ResponseWriter, r *http.Request, bases []string,
+	writeError func(http.ResponseWriter, int, error)) {
+	results := make([]upstreamModels, len(bases))
+	var wg sync.WaitGroup
+	for i, base := range bases {
+		wg.Add(1)
+		go func(i int, base string) {
+			defer wg.Done()
+			results[i] = fetchModels(r.Context(), base, r.Header)
+		}(i, base)
+	}
+	wg.Wait()
+
+	primary := results[0]
+	if primary.err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("GET /v1/models on %s: %w", primary.base, primary.err))
+		return
+	}
+	var top map[string]json.RawMessage
+	if primary.status < 200 || primary.status >= 300 || json.Unmarshal(primary.body, &top) != nil {
+		if ct := primary.header.Get("Content-Type"); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		w.WriteHeader(primary.status)
+		_, _ = w.Write(primary.body)
+		return
+	}
+	merged := make([]json.RawMessage, 0)
+	seen := map[string]bool{}
+	var failures []string
+	for _, result := range results {
+		var list struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if result.err == nil && (result.status < 200 || result.status >= 300) {
+			result.err = fmt.Errorf("HTTP %d", result.status)
+		}
+		if result.err == nil {
+			result.err = json.Unmarshal(result.body, &list)
+		}
+		if result.err != nil {
+			log.Printf("proxy: /v1/models from extra upstream %s failed: %v", result.base, result.err)
+			failures = append(failures, result.base)
+			continue
+		}
+		for _, model := range list.Data {
+			var entry struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(model, &entry)
+			if entry.ID != "" && seen[entry.ID] {
+				continue
+			}
+			seen[entry.ID] = true
+			merged = append(merged, model)
+		}
+	}
+	if len(failures) > 0 {
+		w.Header().Set(upstreamErrorsHeader, strings.Join(failures, ","))
+	}
+	top["data"], _ = json.Marshal(merged)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(top)
+}

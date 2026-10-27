@@ -276,3 +276,103 @@ func TestWithExtraUpstreamsIgnoresBlankAndPrimaryDuplicates(t *testing.T) {
 		t.Fatalf("bases = %v, want just the primary", bases)
 	}
 }
+
+// modelServer is an instance's OpenAI-style /v1/models, which the panel calls with a client API key.
+func modelServer(t *testing.T, status int, ids ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer client-key" {
+			http.Error(w, `{"error":"Invalid API key"}`, http.StatusUnauthorized)
+			return
+		}
+		if status != http.StatusOK {
+			http.Error(w, "boom", status)
+			return
+		}
+		data := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			data = append(data, map[string]any{"id": id, "object": "model"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func serveModels(t *testing.T, primary *httptest.Server, extras ...*httptest.Server) *httptest.ResponseRecorder {
+	t.Helper()
+	svc := New(managerconfig.New(config.Config{CPAUpstreamURL: primary.URL, ManagementKey: "management-key"}, nil, nil))
+	urls := make([]string, 0, len(extras))
+	for _, e := range extras {
+		urls = append(urls, e.URL)
+	}
+	svc.WithExtraUpstreams(urls)
+	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	r.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	svc.ProxyModelList(w, r,
+		func(w http.ResponseWriter, status int, err error) { http.Error(w, err.Error(), status) },
+		func(w http.ResponseWriter) { http.Error(w, "method", http.StatusMethodNotAllowed) })
+	return w
+}
+
+func modelIDs(t *testing.T, w *httptest.ResponseRecorder) []string {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Object string           `json:"object"`
+		Data   []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, w.Body.String())
+	}
+	ids := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		ids = append(ids, m["id"].(string))
+	}
+	return ids
+}
+
+func TestMergedModelListUnionsEveryUpstream(t *testing.T) {
+	w := serveModels(t, modelServer(t, 200, "gpt-a", "gpt-b"), modelServer(t, 200, "claude-c"))
+	if got := strings.Join(modelIDs(t, w), ","); got != "gpt-a,gpt-b,claude-c" {
+		t.Fatalf("models = %s", got)
+	}
+}
+
+func TestMergedModelListListsAModelOnceAndSurvivesAnExtraOutage(t *testing.T) {
+	w := serveModels(t, modelServer(t, 200, "shared", "gpt-a"), modelServer(t, 200, "shared", "claude-c"))
+	if got := strings.Join(modelIDs(t, w), ","); got != "shared,gpt-a,claude-c" {
+		t.Fatalf("models = %s", got)
+	}
+	down := serveModels(t, modelServer(t, 200, "gpt-a"), modelServer(t, 500))
+	if got := strings.Join(modelIDs(t, down), ","); got != "gpt-a" {
+		t.Fatalf("models with extra down = %s", got)
+	}
+	if down.Header().Get("X-CPAMP-Upstream-Errors") == "" {
+		t.Fatalf("an unreachable extra upstream must be reported")
+	}
+}
+
+func TestMergedModelListReturnsThePrimarysErrorUnchanged(t *testing.T) {
+	primary := modelServer(t, 200, "gpt-a")
+	svc := New(managerconfig.New(config.Config{CPAUpstreamURL: primary.URL, ManagementKey: "management-key"}, nil, nil)).
+		WithExtraUpstreams([]string{modelServer(t, 200, "claude-c").URL})
+	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	r.Header.Set("Authorization", "Bearer wrong-key")
+	w := httptest.NewRecorder()
+	svc.ProxyModelList(w, r, func(w http.ResponseWriter, status int, err error) { http.Error(w, err.Error(), status) },
+		func(w http.ResponseWriter) {})
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "Invalid API key") {
+		t.Fatalf("got %d %s, want the primary's 401 body", w.Code, w.Body.String())
+	}
+}
+
+func TestModelListPassesThroughWithoutExtraUpstreams(t *testing.T) {
+	if got := strings.Join(modelIDs(t, serveModels(t, modelServer(t, 200, "gpt-a"))), ","); got != "gpt-a" {
+		t.Fatalf("models = %s", got)
+	}
+}

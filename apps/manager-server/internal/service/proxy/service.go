@@ -1388,6 +1388,10 @@ func (s *Service) ProxyModelList(w http.ResponseWriter, r *http.Request, writeEr
 		writeError(w, http.StatusPreconditionRequired, errors.New("usage service is not configured"))
 		return
 	}
+	if bases := s.upstreamBases(setup.CPAUpstreamURL); len(bases) > 1 {
+		s.serveMergedModels(w, r, bases, writeError)
+		return
+	}
 	target, err := url.Parse(setup.CPAUpstreamURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
