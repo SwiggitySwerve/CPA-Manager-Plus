@@ -167,6 +167,28 @@ func TestMergedAuthFilesRejectsMalformedExtraInventory(t *testing.T) {
 	}
 }
 
+func TestQuotaRequestDoesNotFallBackWhenOwnerDiscoveryFails(t *testing.T) {
+	primary := newFakeCPA(t, 200, codexFile)
+	extra := newFakeCPA(t, 503)
+	svc := newMultiService(t, primary, extra)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call",
+		strings.NewReader(`{"authIndex":"claude-idx","method":"GET","url":"https://example.test/quota"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := serve(svc, request)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 when ownership cannot be established", response.Code)
+	}
+	if strings.Contains(primary.lastRequest(), "/api-call") {
+		t.Fatal("quota request was sent to the wrong provider after failed discovery")
+	}
+	knownRequest := httptest.NewRequest(http.MethodPost, "/v0/management/api-call",
+		strings.NewReader(`{"authIndex":"codex-idx","method":"GET","url":"https://example.test/quota"}`))
+	knownRequest.Header.Set("Content-Type", "application/json")
+	if response := serve(svc, knownRequest); response.Code != http.StatusOK {
+		t.Fatalf("known healthy credential returned %d during an unrelated outage", response.Code)
+	}
+}
+
 func TestMergedAuthFilesFailsWhenThePrimaryIsDown(t *testing.T) {
 	primary := newFakeCPA(t, 500)
 	extra := newFakeCPA(t, 200, claudeFile)

@@ -203,7 +203,11 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		s.serveOAuthStart(w, r, setup, provider, writeError)
 		return
 	}
-	setup = s.routeSetup(r, setup)
+	setup, err = s.routeSetup(r, setup)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	target, err := url.Parse(setup.CPAUpstreamURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

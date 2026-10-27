@@ -241,28 +241,32 @@ func (s *Service) serveMergedAuthFiles(w http.ResponseWriter, r *http.Request, b
 }
 
 // routeSetup points the request at the upstream that owns the credential it names, or leaves it on the primary.
-func (s *Service) routeSetup(r *http.Request, setup store.Setup) store.Setup {
+func (s *Service) routeSetup(r *http.Request, setup store.Setup) (store.Setup, error) {
 	if len(s.providerUpstreams) > 0 {
 		if base := s.oauthRoute(r); base != "" {
 			setup.CPAUpstreamURL = base
-			return setup
+			return setup, nil
 		}
 	}
 	bases := s.upstreamBases(setup.CPAUpstreamURL)
 	if len(bases) < 2 {
-		return setup
+		return setup, nil
 	}
 	keys := requestRoutingKeys(r)
 	if len(keys) == 0 {
-		return setup
+		return setup, nil
 	}
-	if base := s.ownerOf(r.Context(), bases, setup.ManagementKey, keys); base != "" {
+	base, err := s.ownerOf(r.Context(), bases, setup.ManagementKey, keys)
+	if err != nil {
+		return setup, err
+	}
+	if base != "" {
 		setup.CPAUpstreamURL = base
 	}
-	return setup
+	return setup, nil
 }
 
-func (s *Service) ownerOf(ctx context.Context, bases []string, managementKey string, keys []string) string {
+func (s *Service) ownerOf(ctx context.Context, bases []string, managementKey string, keys []string) (string, error) {
 	lookup := func() string {
 		for _, key := range keys {
 			if base, ok := s.owners.byKey[key]; ok {
@@ -277,12 +281,21 @@ func (s *Service) ownerOf(ctx context.Context, bases []string, managementKey str
 	s.owners.mu.Unlock()
 	// A fresh cache is trusted for what it knows; a key it lacks may name a credential created since.
 	if fresh && base != "" {
-		return base
+		return base, nil
 	}
-	s.owners.remember(fetchAllAuthFiles(ctx, bases, managementKey, ""))
+	listings := fetchAllAuthFiles(ctx, bases, managementKey, "")
+	s.owners.remember(listings)
 	s.owners.mu.Lock()
 	defer s.owners.mu.Unlock()
-	return lookup()
+	if base := lookup(); base != "" {
+		return base, nil
+	}
+	for _, listing := range listings {
+		if listing.err != nil {
+			return "", fmt.Errorf("credential owner could not be verified: a proxy instance is unavailable; retry when all instances are reachable")
+		}
+	}
+	return "", nil
 }
 
 // requestRoutingKeys lists the auth_index values and file names a management request refers to.

@@ -27,6 +27,10 @@ instance that owns the credential. Ownership is cached briefly and refreshed on
 cache misses. A duplicate credential identity keeps the primary instance's entry;
 `X-CPAMP-Upstream-Conflicts` reports the conflict.
 
+If an instance is unavailable and ownership cannot be established, the request
+returns HTTP 502 rather than falling back to the primary. Requests for credentials
+with known owners can still reach their instances during an unrelated outage.
+
 Usage collectors write into the same database and feed shared usage rollups.
 Account inventory and quota routing do not extend background inspection to new
 provider types or merge instance configuration editing.
