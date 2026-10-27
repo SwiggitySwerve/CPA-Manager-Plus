@@ -12,7 +12,12 @@ vi.mock('./client', () => ({
   },
 }));
 
-import { apiCallApi, getApiCallErrorDetails, type ApiCallResult } from './apiCall';
+import {
+  apiCallApi,
+  getApiCallErrorDetails,
+  getProviderErrorMessage,
+  type ApiCallResult,
+} from './apiCall';
 
 beforeEach(() => {
   mocks.post.mockReset();
@@ -68,6 +73,22 @@ const buildResult = (overrides: Partial<ApiCallResult> = {}): ApiCallResult => (
   ...overrides,
 });
 
+describe('getProviderErrorMessage', () => {
+  it('extracts the provider message while preserving plain-text failures', () => {
+    expect(
+      getProviderErrorMessage(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'rate_limit_error', message: 'Please try again later.' },
+          request_id: 'private-request-id',
+        })
+      )
+    ).toBe('Please try again later.');
+    expect(getProviderErrorMessage('token_expired')).toBe('token_expired');
+    expect(getProviderErrorMessage('{malformed')).toBe('{malformed');
+  });
+});
+
 describe('getApiCallErrorDetails', () => {
   it('keeps the complete structured response body', () => {
     const result = buildResult({
@@ -91,7 +112,10 @@ describe('getApiCallErrorDetails', () => {
   });
 
   it('preserves a plain-text response body', () => {
-    const result = buildResult({ bodyText: 'upstream access denied', body: 'upstream access denied' });
+    const result = buildResult({
+      bodyText: 'upstream access denied',
+      body: 'upstream access denied',
+    });
 
     expect(getApiCallErrorDetails(result)).toBe(
       '401 upstream access denied\n\nBody:\nupstream access denied'

@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next';
+import { getProviderErrorMessage } from '@/services/api/apiCall';
 import type { CodexQuotaState, QuotaResetAccuracy, XaiQuotaState } from '@/types';
 import { getSortedCodexResetCreditExpiries } from '@/components/quota/quotaConfigs';
 import type {
@@ -1195,7 +1196,7 @@ export const buildOverviewRecentStatus = (
     failure: totals.failure,
     successRate: total > 0 ? (totals.success / total) * 100 : null,
     recentRequests,
-    statusMessage: hasProblemStatusMessage ? row.statusMessage : '',
+    statusMessage: hasProblemStatusMessage ? getProviderErrorMessage(row.statusMessage) : '',
   };
 };
 

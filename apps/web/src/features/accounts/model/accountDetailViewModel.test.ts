@@ -2667,6 +2667,21 @@ describe('accountDetailViewModel', () => {
     });
   });
 
+  it('shows a readable provider failure in both list and detail overview status', () => {
+    const viewModel = buildAccountDetailViewModel(makeRow({
+      statusMessage: JSON.stringify({
+        type: 'error',
+        error: { type: 'rate_limit_error', message: 'Please try again later.' },
+        request_id: 'private-request-id',
+      }),
+      updatedAtMs: 1_000,
+      raw: { ...makeRow().raw, status_code: 429 },
+      quota: { status: 'unknown', remainingPercent: null, usedPercent: null, resetLabel: '-', source: 'none' },
+    }));
+
+    expect(viewModel.overview.recentStatus.statusMessage).toBe('Please try again later.');
+  });
+
   it('omits neutral or superseded raw status messages from the current overview diagnosis', () => {
     const unavailableQuota = {
       status: 'unknown' as const,

@@ -79,6 +79,15 @@ export const getApiCallErrorMessage = (result: ApiCallResult): string => {
   return message || 'Request failed';
 };
 
+/** Read a provider's human-readable error without exposing its JSON envelope. */
+export const getProviderErrorMessage = (input: unknown): string =>
+  getApiCallErrorMessage({
+    ...normalizeBody(input),
+    statusCode: 0,
+    hasStatusCode: false,
+    header: {},
+  });
+
 const formatApiCallBody = (result: ApiCallResult): string => {
   const bodyText = result.bodyText.trim();
   const body = result.body;
