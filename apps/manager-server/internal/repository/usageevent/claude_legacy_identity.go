@@ -10,30 +10,43 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
-// ResolveLegacyAccountKey retains the Codex compatibility contract and adds a
-// narrowly corroborated Claude source/index alias for account-history reads.
+// ResolveLegacyAccountKey checks compatibility within a read-only snapshot.
 func (r *repository) ResolveLegacyAccountKey(ctx context.Context, fields usageidentity.Fields) (string, bool, error) {
-	if normalizeIdentityProvider(fields.AuthProviderSnapshot) != "claude" {
-		return r.ResolveCodexLegacyAccountKey(ctx, fields)
-	}
-	if strings.TrimSpace(fields.AuthFileSnapshot) == "" || strings.TrimSpace(fields.AuthIndex) == "" || strings.TrimSpace(fields.AccountSnapshot) == "" {
-		return "", false, nil
-	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return "", false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var incomplete bool
-	if err := tx.QueryRowContext(ctx, `select exists (
-		select 1 from usage_event_identity_ledger where raw_event_id is null
-	)`).Scan(&incomplete); err != nil {
+	key, allowed, err := ResolveLegacyAccountKey(ctx, tx, fields)
+	if err != nil {
 		return "", false, err
 	}
-	if incomplete {
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	return key, allowed, nil
+}
+
+// ResolveLegacyAccountKey shares the Claude and Codex compatibility proof with
+// callers that already hold a read transaction, including account-window reads.
+func ResolveLegacyAccountKey(ctx context.Context, queryer SQLQueryer, fields usageidentity.Fields) (string, bool, error) {
+	if normalizeIdentityProvider(fields.AuthProviderSnapshot) != "claude" {
+		return ResolveCodexLegacyAccountKey(ctx, queryer, fields)
+	}
+	if strings.TrimSpace(fields.AuthFileSnapshot) == "" || strings.TrimSpace(fields.AuthIndex) == "" || strings.TrimSpace(fields.AccountSnapshot) == "" {
 		return "", false, nil
 	}
-	indices, err := tx.QueryContext(ctx, `select distinct auth_index from usage_events where auth_index is not null`)
+	missing, err := queryer.QueryContext(ctx, `select 1 from usage_event_identity_ledger where raw_event_id is null limit 1`)
+	if err != nil {
+		return "", false, err
+	}
+	incomplete := missing.Next()
+	err = missing.Err()
+	missing.Close()
+	if err != nil || incomplete {
+		return "", false, err
+	}
+	indices, err := queryer.QueryContext(ctx, `select distinct auth_index from usage_events where auth_index is not null`)
 	if err != nil {
 		return "", false, err
 	}
@@ -57,7 +70,7 @@ func (r *repository) ResolveLegacyAccountKey(ctx context.Context, fields usageid
 	if err != nil {
 		return "", false, err
 	}
-	rows, err := tx.QueryContext(ctx, `select distinct
+	rows, err := queryer.QueryContext(ctx, `select distinct
 		coalesce(provider, ''), coalesce(auth_provider_snapshot, ''),
 		coalesce(auth_file_snapshot, ''), coalesce(auth_index, ''),
 		coalesce(account_snapshot, ''), coalesce(auth_account_id_snapshot, ''),
@@ -83,8 +96,5 @@ func (r *repository) ResolveLegacyAccountKey(ctx context.Context, fields usageid
 		return "", false, err
 	}
 	key, allowed := usageidentity.ClaudeLegacyAccountKey(fields, evidence)
-	if err := tx.Commit(); err != nil {
-		return "", false, err
-	}
 	return key, allowed, nil
 }
