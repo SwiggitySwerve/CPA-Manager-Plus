@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
@@ -10,7 +11,9 @@ import (
 )
 
 type Service struct {
-	manager *collectorpkg.Manager
+	manager       *collectorpkg.Manager
+	mu            sync.RWMutex
+	extraManagers []*collectorpkg.Manager
 }
 
 func New(manager *collectorpkg.Manager) *Service {
@@ -42,6 +45,22 @@ func (s *Service) Restart(ctx context.Context, cfg store.ManagerConfig) error {
 
 func (s *Service) Status() collectorpkg.Status {
 	return s.manager.Status()
+}
+
+func (s *Service) SetExtraManagers(managers []*collectorpkg.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extraManagers = append([]*collectorpkg.Manager(nil), managers...)
+}
+
+func (s *Service) Statuses() []collectorpkg.Status {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	statuses := []collectorpkg.Status{s.manager.Status()}
+	for _, manager := range s.extraManagers {
+		statuses = append(statuses, manager.Status())
+	}
+	return statuses
 }
 
 func RuntimeConfigFromManagerConfig(cfg store.ManagerConfig) collectorpkg.RuntimeConfig {

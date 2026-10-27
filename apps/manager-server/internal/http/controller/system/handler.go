@@ -78,6 +78,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		"events":      events,
 		"deadLetters": deadLetters,
 		"collector":   status,
+		"collectors":  h.App.CollectorService.Statuses(),
 		"dataMigration": dataMigrationStatus{
 			Name:          migration.Name,
 			Status:        migration.Status,

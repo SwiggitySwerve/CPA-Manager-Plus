@@ -162,6 +162,7 @@ export interface UsageServiceStatus {
   events?: number;
   deadLetters?: number;
   collector?: UsageServiceCollectorStatus;
+  collectors?: UsageServiceCollectorStatus[];
   database?: UsageServiceDatabaseStatus;
   databaseMaintenance?: UsageServiceDatabaseMaintenanceStatus;
 }

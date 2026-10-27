@@ -287,11 +287,12 @@ func runServer() {
 		}
 		db.StartDerivedMaintenance(ctx)
 		collectorWorker.Start(ctx)
-		worker.StartExtraCollectors(ctx, cfg, db, worker.NewUsageEventFanout(
+		extraCollectors := worker.StartExtraCollectors(ctx, cfg, db, worker.NewUsageEventFanout(
 			accountHistoryRollupWorker,
 			usageDerivedRollupWorker,
 			usageHourlyAggregateWorker,
 		))
+		serverApp.AppContext().CollectorService.SetExtraManagers(extraCollectors)
 		worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
 	}
 
