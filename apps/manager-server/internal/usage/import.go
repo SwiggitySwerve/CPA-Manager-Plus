@@ -2353,7 +2353,7 @@ func eventFromLegacyDetail(
 		AuthType:                      readString(detail, "auth_type", "authType"),
 		AuthIndex:                     authIndex,
 		Source:                        maskSource(sourceRaw),
-		SourceHash:                    hashString(sourceRaw),
+		SourceHash:                    SourceHash(sourceRaw),
 		APIKeyHash:                    hashString(apiKey),
 		AccountSnapshot:               readString(detail, "account_snapshot", "accountSnapshot"),
 		AuthLabelSnapshot:             readString(detail, "auth_label_snapshot", "authLabelSnapshot"),

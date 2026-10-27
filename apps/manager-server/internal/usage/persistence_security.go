@@ -654,7 +654,7 @@ func PrepareSensitiveFieldsForPersistence(event Event) Event {
 	// 2. Correlation pseudonymization for Source
 	trimmedSource := strings.TrimSpace(event.Source)
 	if trimmedSource != "" {
-		sourceSHA := sha256Hex(trimmedSource)
+		sourceSHA := SourceHash(trimmedSource)
 		if ContainsCredential(trimmedSource) || (event.APIKeyHash != "" && strings.EqualFold(sourceSHA, event.APIKeyHash)) {
 			event.Source = "h:" + sourceSHA
 			event.SourceHash = sourceSHA

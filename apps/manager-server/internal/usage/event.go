@@ -1,8 +1,6 @@
 package usage
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -890,7 +888,7 @@ func NormalizeRaw(raw []byte) (Event, error) {
 		AuthType:                      authType,
 		AuthIndex:                     authIndex,
 		Source:                        source,
-		SourceHash:                    hashString(sourceRaw),
+		SourceHash:                    SourceHash(sourceRaw),
 		APIKeyHash:                    hashString(apiKey),
 		AccountSnapshot:               readString(record, "account_snapshot", "accountSnapshot"),
 		AuthLabelSnapshot:             readString(record, "auth_label_snapshot", "authLabelSnapshot"),
@@ -1314,13 +1312,18 @@ func maxInt64(left, right int64) int64 {
 	return right
 }
 
+// SourceHash returns the persisted source digest: lowercase SHA-256 of the
+// trimmed original source, or an empty string for an empty source.
+func SourceHash(value string) string {
+	return hashString(value)
+}
+
 func hashString(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(trimmed))
-	return hex.EncodeToString(sum[:])
+	return sha256Hex(trimmed)
 }
 
 func buildEventHash(event Event) string {
@@ -1357,8 +1360,7 @@ func maskSource(value string) string {
 		return prefix + "***@" + parts[1]
 	}
 	if ContainsCredential(trimmed) {
-		sum := sha256.Sum256([]byte(trimmed))
-		return "h:" + hex.EncodeToString(sum[:])
+		return "h:" + SourceHash(trimmed)
 	}
 	if looksSecret(trimmed) {
 		if len(trimmed) <= 8 {
