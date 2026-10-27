@@ -24,8 +24,11 @@ from loading; retry after that instance recovers.
 
 Credential-specific requests, including quota `api-call` requests, go to the
 instance that owns the credential. Ownership is cached briefly and refreshed on
-cache misses. A duplicate credential identity keeps the primary instance's entry;
-`X-CPAMP-Upstream-Conflicts` reports the conflict.
+cache misses. Duplicate credential indices or routing names across instances cause
+HTTP 409 instead of hiding one account or forwarding to an arbitrary owner.
+`X-CPAMP-Upstream-Conflicts` reports inventory conflicts. Requests with selectors
+pointing to different owners also fail with HTTP 409. Cached ambiguity is retained
+through an outage until a complete inventory establishes an unambiguous owner.
 
 If an instance is unavailable and ownership cannot be established, the request
 returns HTTP 502 rather than falling back to the primary. Requests for credentials
@@ -34,6 +37,13 @@ with known owners can still reach their instances during an unrelated outage.
 Usage collectors write into the same database and feed shared usage rollups.
 Account inventory and quota routing do not extend background inspection to new
 provider types or merge instance configuration editing.
+
+The collector service owns registration and status snapshots for every collector.
+Startup registers additional collector handles through `SetExtraManagers`.
+`GET /status` keeps the legacy primary `collector` field and adds `collectors`,
+including the primary. The dashboard shows each instance's errors, timestamps,
+and insertion counters. A quiet collector is not considered failed merely because
+it has not received recent traffic. Stopped collectors are shown as disabled.
 
 ## Verification
 

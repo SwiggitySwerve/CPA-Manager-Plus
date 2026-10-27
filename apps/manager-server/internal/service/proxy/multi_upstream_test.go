@@ -117,7 +117,7 @@ func TestMergedAuthFilesListsEveryUpstream(t *testing.T) {
 	}
 }
 
-func TestMergedAuthFilesKeepsPrimaryEntryOnCollisionAndSaysSo(t *testing.T) {
+func TestMergedAuthFilesRejectsCredentialCollisions(t *testing.T) {
 	primary := newFakeCPA(t, 200, map[string]any{"name": "same.json", "auth_index": "dup", "provider": "codex"})
 	extra := newFakeCPA(t, 200,
 		map[string]any{"name": "same.json", "auth_index": "dup", "provider": "claude"}, claudeFile)
@@ -125,12 +125,19 @@ func TestMergedAuthFilesKeepsPrimaryEntryOnCollisionAndSaysSo(t *testing.T) {
 
 	w := serve(svc, httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil))
 
-	files := listedFiles(t, w)
-	if len(files) != 2 || files[0]["provider"] != "codex" {
-		t.Fatalf("files = %v, want the primary's duplicate kept once plus the extra's unique file", files)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 instead of hiding a colliding credential", w.Code)
 	}
 	if got := w.Header().Get("X-CPAMP-Upstream-Conflicts"); !strings.Contains(got, "dup") {
 		t.Fatalf("conflict header = %q, want it to name the duplicated auth_index", got)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(`{"authIndex":"dup"}`))
+	request.Header.Set("Content-Type", "application/json")
+	if response := serve(svc, request); response.Code != http.StatusConflict {
+		t.Fatalf("colliding quota request returned %d, want 409", response.Code)
+	}
+	if strings.Contains(primary.lastRequest(), "/api-call") || strings.Contains(extra.lastRequest(), "/api-call") {
+		t.Fatal("ambiguous credential request reached an upstream")
 	}
 }
 
@@ -147,6 +154,54 @@ func TestMergedAuthFilesRejectsAnIncompleteInventory(t *testing.T) {
 	if got := w.Header().Get("X-CPAMP-Upstream-Errors"); !strings.Contains(got, extra.URL) {
 		t.Fatalf("error header = %q, want it to name the failed upstream", got)
 	}
+}
+
+func TestCrossInstanceDuplicateNamesAndConflictingSelectorsAreRejected(t *testing.T) {
+	t.Run("duplicate names", func(t *testing.T) {
+		primary := newFakeCPA(t, 200, map[string]any{"name": "same.json", "auth_index": "codex-idx"})
+		extra := newFakeCPA(t, 200, map[string]any{"name": "same.json", "auth_index": "claude-idx"})
+		svc := newMultiService(t, primary, extra)
+		response := serve(svc, httptest.NewRequest(http.MethodGet, authFilesPath, nil))
+		if response.Code != http.StatusConflict {
+			t.Fatalf("inventory status = %d, want 409 for duplicate routing names", response.Code)
+		}
+	})
+	t.Run("conflicting selectors", func(t *testing.T) {
+		primary := newFakeCPA(t, 200, codexFile)
+		extra := newFakeCPA(t, 200, claudeFile)
+		svc := newMultiService(t, primary, extra)
+		request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call",
+			strings.NewReader(`{"authIndex":"codex-idx","name":"claude-b.json"}`))
+		request.Header.Set("Content-Type", "application/json")
+		if response := serve(svc, request); response.Code != http.StatusConflict {
+			t.Fatalf("request status = %d, want 409 for conflicting selectors", response.Code)
+		}
+		if strings.Contains(primary.lastRequest(), "/api-call") || strings.Contains(extra.lastRequest(), "/api-call") {
+			t.Fatal("conflicting selectors were forwarded")
+		}
+	})
+}
+
+func TestColdAndCachedCredentialCollisionsNeverFallBack(t *testing.T) {
+	primary := newFakeCPA(t, 200, map[string]any{"name": "codex.json", "auth_index": "dup"})
+	extra := newFakeCPA(t, 200, map[string]any{"name": "claude.json", "auth_index": "dup"})
+	svc := newMultiService(t, primary, extra)
+	requestQuota := func() {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(`{"authIndex":"dup"}`))
+		request.Header.Set("Content-Type", "application/json")
+		if response := serve(svc, request); response.Code != http.StatusConflict {
+			t.Fatalf("request status = %d, want 409 for colliding credential", response.Code)
+		}
+		if strings.Contains(primary.lastRequest(), "/api-call") {
+			t.Fatal("ambiguous quota request was sent to the primary")
+		}
+	}
+	requestQuota()
+	requestQuota()
+	extra.Close()
+	svc.owners.fetchedAt = time.Time{}
+	requestQuota()
 }
 
 func TestMergedAuthFilesRejectsMalformedExtraInventory(t *testing.T) {

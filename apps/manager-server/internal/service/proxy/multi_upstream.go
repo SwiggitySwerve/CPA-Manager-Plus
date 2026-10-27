@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,11 +34,13 @@ const (
 )
 
 var upstreamHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var errAmbiguousCredential = errors.New("credential identities overlap across proxy instances; resolve duplicate identities before retrying")
 
 // upstreamOwners remembers which upstream holds each auth_index and file name.
 type upstreamOwners struct {
 	mu        sync.Mutex
 	byKey     map[string]string
+	ambiguous map[string]bool
 	fetchedAt time.Time
 }
 
@@ -143,29 +147,48 @@ func authFileIdentity(raw json.RawMessage) (identity, authIndex, name string) {
 	return "name:" + name, "", name
 }
 
+func rememberAuthOwner(owners map[string]string, ambiguous map[string]bool, key, base string) {
+	if key == "" || ambiguous[key] {
+		return
+	}
+	if previous, exists := owners[key]; exists && previous != base {
+		delete(owners, key)
+		ambiguous[key] = true
+		return
+	}
+	owners[key] = base
+}
+
 // mergeAuthFiles unions the listings in order. A credential reported by two upstreams is kept once, from the
 // earlier upstream, and named in the returned conflicts.
 func mergeAuthFiles(listings []authFilesListing) (merged []json.RawMessage, conflicts []string) {
 	merged = make([]json.RawMessage, 0)
 	seen := map[string]bool{}
+	owners := map[string]string{}
+	ambiguous := map[string]bool{}
 	for _, listing := range listings {
 		if listing.err != nil {
 			continue
 		}
 		for _, file := range listing.files {
-			identity, _, name := authFileIdentity(file)
+			identity, authIndex, name := authFileIdentity(file)
+			rememberAuthOwner(owners, ambiguous, authIndex, listing.base)
+			rememberAuthOwner(owners, ambiguous, name, listing.base)
 			if identity == "name:" && name == "" {
 				merged = append(merged, file) // nothing to deduplicate on; do not drop it
 				continue
 			}
 			if seen[identity] {
-				conflicts = append(conflicts, strings.TrimPrefix(identity, "name:"))
 				continue
 			}
 			seen[identity] = true
 			merged = append(merged, file)
 		}
 	}
+	for key := range ambiguous {
+		conflicts = append(conflicts, key)
+	}
+	sort.Strings(conflicts)
 	return merged, conflicts
 }
 
@@ -175,6 +198,7 @@ func (o *upstreamOwners) remember(listings []authFilesListing) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	next := map[string]string{}
+	ambiguous := map[string]bool{}
 	failed := map[string]bool{}
 	for _, listing := range listings {
 		if listing.err != nil {
@@ -184,18 +208,23 @@ func (o *upstreamOwners) remember(listings []authFilesListing) {
 		for _, file := range listing.files {
 			_, authIndex, name := authFileIdentity(file)
 			for _, key := range []string{authIndex, name} {
-				if _, taken := next[key]; key != "" && !taken {
-					next[key] = listing.base
-				}
+				rememberAuthOwner(next, ambiguous, key, listing.base)
 			}
 		}
 	}
 	for key, base := range o.byKey {
-		if _, replaced := next[key]; failed[base] && !replaced {
-			next[key] = base
+		if failed[base] {
+			rememberAuthOwner(next, ambiguous, key, base)
+		}
+	}
+	if len(failed) > 0 {
+		for key := range o.ambiguous {
+			delete(next, key)
+			ambiguous[key] = true
 		}
 	}
 	o.byKey = next
+	o.ambiguous = ambiguous
 	o.fetchedAt = time.Now()
 }
 
@@ -226,8 +255,9 @@ func (s *Service) serveMergedAuthFiles(w http.ResponseWriter, r *http.Request, b
 	s.owners.remember(listings)
 	merged, conflicts := mergeAuthFiles(listings)
 	if len(conflicts) > 0 {
-		log.Printf("proxy: credentials present on more than one upstream, using the first: %s", strings.Join(conflicts, ", "))
 		w.Header().Set(upstreamConflictsHeader, strings.Join(conflicts, ","))
+		writeError(w, http.StatusConflict, errAmbiguousCredential)
+		return
 	}
 	top := listings[0].top
 	filesJSON, err := json.Marshal(merged)
@@ -267,28 +297,35 @@ func (s *Service) routeSetup(r *http.Request, setup store.Setup) (store.Setup, e
 }
 
 func (s *Service) ownerOf(ctx context.Context, bases []string, managementKey string, keys []string) (string, error) {
-	lookup := func() string {
+	lookup := func() (string, error) {
+		owner := ""
 		for _, key := range keys {
+			if s.owners.ambiguous[key] {
+				return "", errAmbiguousCredential
+			}
 			if base, ok := s.owners.byKey[key]; ok {
-				return base
+				if owner != "" && owner != base {
+					return "", errAmbiguousCredential
+				}
+				owner = base
 			}
 		}
-		return ""
+		return owner, nil
 	}
 	s.owners.mu.Lock()
 	fresh := time.Since(s.owners.fetchedAt) < ownerCacheTTL
-	base := lookup()
+	base, err := lookup()
 	s.owners.mu.Unlock()
 	// A fresh cache is trusted for what it knows; a key it lacks may name a credential created since.
-	if fresh && base != "" {
-		return base, nil
+	if fresh && (base != "" || err != nil) {
+		return base, err
 	}
 	listings := fetchAllAuthFiles(ctx, bases, managementKey, "")
 	s.owners.remember(listings)
 	s.owners.mu.Lock()
 	defer s.owners.mu.Unlock()
-	if base := lookup(); base != "" {
-		return base, nil
+	if base, err := lookup(); base != "" || err != nil {
+		return base, err
 	}
 	for _, listing := range listings {
 		if listing.err != nil {

@@ -205,7 +205,11 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 	}
 	setup, err = s.routeSetup(r, setup)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		status := http.StatusBadGateway
+		if errors.Is(err, errAmbiguousCredential) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
 		return
 	}
 	target, err := url.Parse(setup.CPAUpstreamURL)
