@@ -46,7 +46,7 @@ export function AccountStatusMessage({
           {message}
         </p>
       ) : null}
-      {retryAtMs ? (
+      {message && retryAtMs ? (
         <time
           dateTime={new Date(retryAtMs).toISOString()}
           title={formatTimestampTitle(retryAtMs, i18n.language)}

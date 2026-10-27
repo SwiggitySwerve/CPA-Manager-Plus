@@ -265,6 +265,7 @@ export interface AccountDetailOverviewRecentStatus {
   successRate: number | null;
   recentRequests: RecentRequestBucket[];
   statusMessage: string;
+  listStatusMessage: string;
   retryAtMs: number | null;
   quotaError: string | null;
 }
@@ -1183,7 +1184,7 @@ const buildOverviewActivity = (
 
 export const buildOverviewRecentStatus = (
   row: AccountRow,
-  _decision?: AccountDetailOverviewDecision | null,
+  decision?: Pick<AccountDetailOverviewDecision, 'status'> | null,
   requestEvidence?: ReturnType<typeof resolveAccountRequestHealthEvidence>
 ): AccountDetailOverviewRecentStatus => {
   const recentRequests = row.usage.recentRequests;
@@ -1199,13 +1200,19 @@ export const buildOverviewRecentStatus = (
     row.quota.status === 'error' &&
     (classifyAccountQuotaRefreshEvidence(row) !== 'credential_failure' ||
       isAccountQuotaRefreshProblemCurrent(row, requestEvidence));
+  const statusMessage = hasProblemStatusMessage ? getProviderErrorMessage(row.statusMessage) : '';
+  const quotaLabelExplainsStatus =
+    credentialStatusKind === 'quota' &&
+    decision != null &&
+    getOverviewHealthLimitKind(decision.status) !== null;
 
   return {
     success: totals.success,
     failure: totals.failure,
     successRate: total > 0 ? (totals.success / total) * 100 : null,
     recentRequests,
-    statusMessage: hasProblemStatusMessage ? getProviderErrorMessage(row.statusMessage) : '',
+    statusMessage,
+    listStatusMessage: quotaLabelExplainsStatus ? '' : statusMessage,
     retryAtMs:
       hasProblemStatusMessage && row.raw.unavailable === true
         ? readAuthFileNextRetryAtMs(row.raw)

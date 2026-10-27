@@ -10579,6 +10579,37 @@ describe('AccountsPage replacement flows', () => {
       .toBe(readText(cardMessage));
   });
 
+  it.each(['grid', 'table'])('uses the weekly exhausted label in %s view and keeps provider details in the drawer', async (view) => {
+    const message = 'The usage limit has been reached';
+    const file = {
+      ...makeCodexFile('weekly.json', 'auth-weekly', 'weekly@example.com'),
+      status_message: JSON.stringify({ error: { type: 'usage_limit_reached', message } }),
+      unavailable: true,
+      next_retry_after: '2026-11-02T06:19:29Z',
+    } as AuthFileItem;
+    mocks.files = [file];
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      windows: [makeCodexQuotaWindow({ id: 'weekly', usedPercent: 100, limitWindowSeconds: 604800 })],
+    });
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': `accounts.view_mode_${view}` }).props.onClick();
+    });
+    await flushPromises();
+    const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+    expect(readText(card)).toContain('accounts.health_weekly_exhausted');
+    expect(card.findAllByProps({ 'data-overview-recent-status-message': 'true' })).toHaveLength(0);
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await flushPromises();
+    const overview = renderer.root.findByProps({ 'data-overview-section': 'recent-status' });
+    expect(readText(overview)).toContain(message);
+    expect(overview.findByType('time').props.dateTime).toBe('2026-11-02T06:19:29.000Z');
+  });
+
   it('keeps the inference quota failure after manually refreshing Codex quota', async () => {
     const message = 'The usage limit has been reached';
     const file = {

@@ -1,16 +1,20 @@
 {
-  "phase": "after",
+  "phase": "concise",
   "views": [
     {
       "view": "table",
       "accounts": 5,
-      "messages": 4,
+      "messages": 0,
+      "weekly_exhausted": 4,
+      "quota_errors": 0,
       "mismatches": 0
     },
     {
       "view": "grid",
       "accounts": 5,
-      "messages": 4,
+      "messages": 0,
+      "weekly_exhausted": 4,
+      "quota_errors": 0,
       "mismatches": 0
     }
   ],

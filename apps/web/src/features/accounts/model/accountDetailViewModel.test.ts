@@ -11,6 +11,7 @@ import type {
 import type { AccountRow } from './accountRows';
 import {
   buildAccountDetailViewModel,
+  buildOverviewRecentStatus,
   type AccountDetailQuotaWindowInput,
 } from './accountDetailViewModel';
 import { accountWindowUsageRequestKey } from './accountWindowUsageRows';
@@ -2627,6 +2628,18 @@ describe('accountDetailViewModel', () => {
     expect(viewModel.overview.decision.basisLabelKey).toBe(
       'accounts.detail_overview_basis_credential_state'
     );
+  });
+
+  it('uses the existing quota label only for explained quota failures while preserving detail evidence', () => {
+    const row = makeRow({ statusMessage: 'The usage limit has been reached' });
+    const knownWeeklyLimit = buildOverviewRecentStatus(row, { status: 'weekly_exhausted' });
+    expect(knownWeeklyLimit.listStatusMessage).toBe('');
+    expect(knownWeeklyLimit.statusMessage).toBe(row.statusMessage);
+    expect(buildOverviewRecentStatus(row, { status: 'limited' }).listStatusMessage).toBe(row.statusMessage);
+    expect(buildOverviewRecentStatus(
+      { ...row, statusMessage: 'upstream unavailable' },
+      { status: 'weekly_exhausted' }
+    ).listStatusMessage).toBe('upstream unavailable');
   });
 
   it('aggregates recent status from request buckets and preserves the current status message', () => {

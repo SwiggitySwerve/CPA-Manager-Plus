@@ -6,11 +6,15 @@ manual quota refresh, mobile sizing, and light/dark themes.
 
 - Before: table displayed zero of four current provider errors; cards displayed
   three, hiding the Codex usage-limit message.
-- After: table and cards display all four messages and proxy retry times, matching
-  the credential API. Quota-fetch failures remain visible with cached quota data.
+- Final display: table and cards identify all four weekly-exhausted accounts using
+  the existing badge and reset display, without duplicate provider error panels.
+  Full messages and retry times remain in details. Unknown limits, unrelated
+  provider errors, and quota-fetch failures remain visible in both layouts.
+- `verbose-table-dark.png` records the intermediate display that was simplified
+  after user feedback. `after-*` images show the final display.
 - Browser: no uncaught errors, failed panel HTTP requests, or mobile page overflow.
   Provider errors returned inside successful management responses are displayed.
-- Checks: 4,551 web tests, 266 repository tests, typecheck, build, artifact checks,
+- Checks: 4,554 web tests, 266 repository tests, typecheck, build, artifact checks,
   and lint passed. Lint retains seven existing warnings.
 - Live inference: GPT returned HTTP 200 and `PROXY_OK`. Claude returned HTTP 429
   because all three credentials were cooling down. The earliest reported retry

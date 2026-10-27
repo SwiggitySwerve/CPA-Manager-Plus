@@ -9,7 +9,10 @@ boundaries retain their existing scope; quota refresh must only create a raw
 status boundary for an authentication failure.
 
 Table, card, and detail views consume `buildOverviewRecentStatus` and render the
-same `AccountStatusMessage`. Request history stays separate from current provider
+same `AccountStatusMessage`. Known five-hour, weekly, or monthly exhaustion uses
+the existing health label and reset display in the list. The full provider message
+and proxy retry time remain in account details. Unknown limits and unrelated
+errors remain visible in both list layouts. Request history stays separate from current provider
 status. Quota-lookup errors stay visible even when no quota windows are available
 or cached windows remain. Messages are readable provider errors, without truncation. An unavailable
 credential's valid `next_retry_after` is shown as the proxy's retry time; it is not a

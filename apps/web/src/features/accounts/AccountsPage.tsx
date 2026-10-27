@@ -9087,7 +9087,7 @@ export function AccountsPage() {
     );
     const overviewRecentStatus = buildOverviewRecentStatus(
       row,
-      null,
+      item.health,
       requestEvidence
     );
     const recentStatusData = statusBarDataFromRecentRequests(overviewRecentStatus.recentRequests);
@@ -9648,7 +9648,7 @@ export function AccountsPage() {
                     </div>
 
                     <AccountStatusMessage
-                      message={ctx.overviewRecentStatus.statusMessage}
+                      message={ctx.overviewRecentStatus.listStatusMessage}
                       retryAtMs={ctx.overviewRecentStatus.retryAtMs}
                       quotaError={ctx.overviewRecentStatus.quotaError}
                     />
@@ -9971,7 +9971,7 @@ export function AccountsPage() {
                     {renderRowActions(row, ctx.item.health.status === 'reauth')}
                   </div>
                   <AccountStatusMessage
-                    message={ctx.overviewRecentStatus.statusMessage}
+                    message={ctx.overviewRecentStatus.listStatusMessage}
                     retryAtMs={ctx.overviewRecentStatus.retryAtMs}
                     quotaError={ctx.overviewRecentStatus.quotaError}
                     className={styles.accountCardStatusMessage}
