@@ -85,6 +85,10 @@ import {
   useCredentialInspectionSnapshot,
 } from '@/features/accounts/hooks/useCredentialInspectionSnapshot';
 import { useAccountsWorkspaceRefresh } from '@/features/accounts/hooks/useAccountsWorkspaceRefresh';
+import {
+  getAccountQuotaRefreshKey,
+  useAccountQuotaCatchUp,
+} from '@/features/accounts/hooks/useAccountQuotaCatchUp';
 import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderSnapshotsLoader';
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
@@ -450,9 +454,6 @@ const ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES = new Set(['pro', 'ultra', 'ultra-lite
 const ANTIGRAVITY_MAIN_LIST_QUOTA_WINDOW_LIMIT = 5;
 
 type AccountQuotaRefreshMode = 'summary' | 'detail';
-
-const getAccountQuotaRefreshKey = (row: AccountRow): string =>
-  `${row.provider}:${getQuotaCredentialStoreKey(row.raw)}`;
 
 const getMainListQuotaWindowLimit = (
   layoutMode: AccountsLayoutMode,
@@ -6819,38 +6820,21 @@ export function AccountsPage() {
       : null
   );
 
-  // Auto refresh also runs once when the page is opened (and when it becomes visible
-  // again), for rows whose live quota snapshot is missing or older than the interval.
+  // Catch up newly visible credentials once per connection and visible session,
+  // when their live quota snapshot is missing or older than the interval.
   // Without this, details only the live check returns (ChatGPT credits, Claude dollar
   // limits) stay hidden until the first interval elapses. Opt-in at build time
   // (VITE_QUOTA_REFRESH_ON_OPEN=true) so the stock test suite's fetch mocks hold.
-  const quotaCatchUpDoneRef = useRef(false);
-  useEffect(() => {
-    if (!QUOTA_REFRESH_ON_OPEN) return;
-    if (!documentVisible || activeView !== 'accounts') {
-      quotaCatchUpDoneRef.current = false;
-      return;
-    }
-    if (quotaCatchUpDoneRef.current || quotaAutoRefreshMs <= 0 || quotaRefreshing) return;
-    if (disableControls || pageRows.length === 0) return;
-    const now = Date.now();
-    const stale = pageRows.filter(
-      (row) =>
-        !row.runtimeOnly &&
-        isQuotaRefreshSupportedProvider(row.provider) &&
-        (row.quota.fetchedAtMs == null || now - row.quota.fetchedAtMs >= quotaAutoRefreshMs)
-    );
-    quotaCatchUpDoneRef.current = true;
-    if (stale.length > 0) void refreshQuotaRows(stale, { silent: true });
-  }, [
-    activeView,
-    disableControls,
-    documentVisible,
+  useAccountQuotaCatchUp({
+    enabled: QUOTA_REFRESH_ON_OPEN,
+    connectionFingerprint,
+    active: documentVisible && activeView === 'accounts',
     pageRows,
     quotaAutoRefreshMs,
     quotaRefreshing,
+    disableControls,
     refreshQuotaRows,
-  ]);
+  });
 
   const refreshAccountQuota = useCallback(
     async (row: AccountRow, mode: AccountQuotaRefreshMode = 'summary'): Promise<void> => {
