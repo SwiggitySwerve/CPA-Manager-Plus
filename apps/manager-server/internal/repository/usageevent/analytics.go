@@ -35,28 +35,29 @@ var (
 )
 
 type AnalyticsFilter struct {
-	FromMS           int64
-	ToMS             int64
-	SearchQuery      string
-	SearchAPIKeyHash string
-	Models           []string
-	Providers        []string
-	Accounts         []string
-	CredentialIDs    []string
-	AuthFiles        []string
-	AuthIndices      []string
-	APIKeyHashes     []string
-	SourceHashes     []string
-	ProjectIDs       []string
-	RequestTypes     []string
-	IncludeFailed    bool
-	FailedOnly       bool
-	MinLatencyMS     int64
-	CacheStatus      string
-	HeaderErrorKinds []string
-	HeaderErrorCodes []string
-	HeaderQuotaPlans []string
-	HeaderTraceIDs   []string
+	ExcludeSupplementary bool
+	FromMS               int64
+	ToMS                 int64
+	SearchQuery          string
+	SearchAPIKeyHash     string
+	Models               []string
+	Providers            []string
+	Accounts             []string
+	CredentialIDs        []string
+	AuthFiles            []string
+	AuthIndices          []string
+	APIKeyHashes         []string
+	SourceHashes         []string
+	ProjectIDs           []string
+	RequestTypes         []string
+	IncludeFailed        bool
+	FailedOnly           bool
+	MinLatencyMS         int64
+	CacheStatus          string
+	HeaderErrorKinds     []string
+	HeaderErrorCodes     []string
+	HeaderQuotaPlans     []string
+	HeaderTraceIDs       []string
 }
 
 var analyticsSearchTextColumns = usageprojection.SearchColumns
@@ -400,6 +401,7 @@ type TaskBucket struct {
 }
 
 type EventPageItem struct {
+	AnalyticsMetadata      usage.AnalyticsMetadata
 	ID                     int64
 	RequestID              string
 	EventHash              string
@@ -528,10 +530,38 @@ from usage_events `+where, args...)
 	return agg, nil
 }
 
+// ProviderModelStat groups the complete filtered raw dataset, independently of pagination.
+type ProviderModelStat struct {
+	ModelStat
+	Provider string
+}
+
+func (r *repository) ProviderModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]ProviderModelStat, error) {
+	return r.modelStatsWithProvider(ctx, filter, 0, true)
+}
+
 func (r *repository) ModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]ModelStat, error) {
+	grouped, err := r.modelStatsWithProvider(ctx, filter, limit, false)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]ModelStat, 0, len(grouped))
+	for _, row := range grouped {
+		rows = append(rows, row.ModelStat)
+	}
+	return rows, nil
+}
+
+func (r *repository) modelStatsWithProvider(ctx context.Context, filter AnalyticsFilter, limit int, byProvider bool) ([]ProviderModelStat, error) {
+	providerExpression := "''"
+	providerGroup := ""
+	if byProvider {
+		providerExpression = "coalesce(nullif(auth_provider_snapshot, ''), provider, '')"
+		providerGroup = ", " + providerExpression
+	}
 	where, args := analyticsWhere(filter)
 	query := pricingBandedUsageEventsCTE + `
-select
+select ` + providerExpression + `,
 	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
@@ -552,7 +582,7 @@ select
 	coalesce(sum(` + longCacheCreationExpr + `), 0),
 	coalesce(sum(total_tokens), 0)
 from banded_usage_events ` + where + `
-group by analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')` + providerGroup + `
 order by calls desc`
 	if limit > 0 {
 		query = pricingBandedUsageEventsCTE + `, filtered as (
@@ -565,7 +595,7 @@ top_models as (
 	order by model_calls desc
 	limit ?
 )
-select
+select '',
 	f.analytics_model_value as model,
 	f.billing_model_value as billing_model,
 	f.pricing_model_value,
@@ -597,10 +627,11 @@ order by max(t.model_calls) desc, f.analytics_model_value, calls desc`
 	}
 	defer rows.Close()
 
-	stats := make([]ModelStat, 0)
+	stats := make([]ProviderModelStat, 0)
 	for rows.Next() {
-		var stat ModelStat
+		var stat ProviderModelStat
 		if err := rows.Scan(
+			&stat.Provider,
 			&stat.Model,
 			&stat.BillingModel,
 			&stat.PricingModel,
@@ -2689,7 +2720,8 @@ func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsF
 	coalesce(parent_session_id, ''),
 	coalesce(access_token_sha256, ''),
 	generate,
-	stream
+	stream,
+	coalesce(raw_json, '')
 from usage_events `+where+`
 order by timestamp_ms desc, id desc
 limit ?`, args...)
@@ -2702,7 +2734,7 @@ limit ?`, args...)
 	for rows.Next() {
 		var item EventPageItem
 		var failed int
-		var responseMetadataJSON string
+		var responseMetadataJSON, rawEnvelope string
 		var responseModel, sessionID, parentSessionID, accessTokenSHA256 sql.NullString
 		var generateVal, streamVal sql.NullInt64
 		if err := rows.Scan(
@@ -2759,9 +2791,11 @@ limit ?`, args...)
 			&accessTokenSHA256,
 			&generateVal,
 			&streamVal,
+			&rawEnvelope,
 		); err != nil {
 			return EventsPage{}, err
 		}
+		item.AnalyticsMetadata = usage.AnalyticsMetadataFromJSON(rawEnvelope)
 		item.Failed = failed != 0
 		item.ResponseModel = responseModel.String
 		item.SessionID = sessionID.String
@@ -2980,6 +3014,10 @@ order by analytics_model`, args...)
 func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	conditions := []string{"timestamp_ms >= ?", "timestamp_ms < ?"}
 	args := []any{filter.FromMS, filter.ToMS}
+	if filter.ExcludeSupplementary {
+		conditions = append(conditions, "id not in (select id from usage_events indexed by "+usage.AnalyticsSupplementaryIndex+" where "+usage.SQLSupplementaryAnalyticsRecord("raw_json")+" and timestamp_ms >= ? and timestamp_ms < ?)")
+		args = append(args, filter.FromMS, filter.ToMS)
+	}
 
 	query := strings.TrimSpace(strings.ToLower(filter.SearchQuery))
 	hash := strings.TrimSpace(strings.ToLower(filter.SearchAPIKeyHash))

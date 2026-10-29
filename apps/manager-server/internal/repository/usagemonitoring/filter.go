@@ -9,6 +9,9 @@ import (
 )
 
 func SupportsStatsFilter(filter AnalyticsFilter) bool {
+	if filter.ExcludeSupplementary {
+		return false
+	}
 	return strings.TrimSpace(filter.SearchQuery) == "" &&
 		len(filter.ProjectIDs) == 0 &&
 		len(filter.HeaderErrorKinds) == 0 &&
@@ -24,6 +27,9 @@ func SupportsStatsFilter(filter AnalyticsFilter) bool {
 // the projection's field separator, so those uncommon searches must retain the
 // raw usage_events path instead of returning a false cross-field match.
 func SupportsEventProjectionFilter(filter AnalyticsFilter) bool {
+	if filter.ExcludeSupplementary {
+		return false
+	}
 	query := strings.TrimSpace(filter.SearchQuery)
 	return !strings.ContainsAny(query, "%_\x1f")
 }
@@ -33,6 +39,9 @@ func SupportsEventProjectionFilter(filter AnalyticsFilter) bool {
 // usage_events timestamp index and avoids the projection's two-step detail
 // lookup; scoped requests benefit from scanning the narrow projection first.
 func PrefersEventProjection(filter AnalyticsFilter) bool {
+	if filter.ExcludeSupplementary {
+		return true
+	}
 	return strings.TrimSpace(filter.SearchQuery) != "" ||
 		strings.TrimSpace(filter.SearchAPIKeyHash) != "" ||
 		len(filter.Models) > 0 ||
@@ -56,6 +65,9 @@ func PrefersEventProjection(filter AnalyticsFilter) bool {
 }
 
 func SupportsSelectorFilter(filter AnalyticsFilter) bool {
+	if filter.ExcludeSupplementary {
+		return false
+	}
 	return strings.TrimSpace(filter.SearchQuery) == "" &&
 		strings.TrimSpace(filter.SearchAPIKeyHash) == "" &&
 		len(filter.Models) == 0 &&

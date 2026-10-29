@@ -40,6 +40,7 @@ const (
 )
 
 type Service struct {
+	proxQueries      chan struct{}
 	store            *store.Store
 	hourlyReader     *usagehourly.Reader
 	monitoringReader *monitoringrollup.Reader
@@ -108,6 +109,7 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 		enabled = hourlyRollupEnabled[0]
 	}
 	return &Service{
+		proxQueries:      make(chan struct{}, 2),
 		store:            store,
 		hourlyReader:     usagehourly.New(store, enabled, "monitoring-rollup"),
 		monitoringReader: monitoringrollup.New(store),
@@ -115,6 +117,7 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 }
 
 type Request struct {
+	BoundedLatency   bool    `json:"-"`
 	FromMS           int64   `json:"from_ms"`
 	ToMS             int64   `json:"to_ms"`
 	NowMS            int64   `json:"now_ms"`
@@ -126,24 +129,25 @@ type Request struct {
 }
 
 type Filters struct {
-	Models           []string `json:"models"`
-	Providers        []string `json:"providers"`
-	Accounts         []string `json:"accounts"`
-	CredentialIDs    []string `json:"credential_ids"`
-	AuthFiles        []string `json:"auth_files"`
-	AuthIndices      []string `json:"auth_indices"`
-	APIKeyHashes     []string `json:"api_key_hashes"`
-	SourceHashes     []string `json:"source_hashes"`
-	ProjectIDs       []string `json:"project_ids"`
-	RequestTypes     []string `json:"request_types"`
-	HeaderErrorKinds []string `json:"header_error_kinds"`
-	HeaderErrorCodes []string `json:"header_error_codes"`
-	HeaderQuotaPlans []string `json:"header_quota_plans"`
-	HeaderTraceIDs   []string `json:"header_trace_ids"`
-	IncludeFailed    *bool    `json:"include_failed"`
-	FailedOnly       bool     `json:"failed_only"`
-	MinLatencyMS     int64    `json:"min_latency_ms"`
-	CacheStatus      string   `json:"cache_status"`
+	ExcludeSupplementary bool     `json:"-"`
+	Models               []string `json:"models"`
+	Providers            []string `json:"providers"`
+	Accounts             []string `json:"accounts"`
+	CredentialIDs        []string `json:"credential_ids"`
+	AuthFiles            []string `json:"auth_files"`
+	AuthIndices          []string `json:"auth_indices"`
+	APIKeyHashes         []string `json:"api_key_hashes"`
+	SourceHashes         []string `json:"source_hashes"`
+	ProjectIDs           []string `json:"project_ids"`
+	RequestTypes         []string `json:"request_types"`
+	HeaderErrorKinds     []string `json:"header_error_kinds"`
+	HeaderErrorCodes     []string `json:"header_error_codes"`
+	HeaderQuotaPlans     []string `json:"header_quota_plans"`
+	HeaderTraceIDs       []string `json:"header_trace_ids"`
+	IncludeFailed        *bool    `json:"include_failed"`
+	FailedOnly           bool     `json:"failed_only"`
+	MinLatencyMS         int64    `json:"min_latency_ms"`
+	CacheStatus          string   `json:"cache_status"`
 }
 
 type Include struct {
@@ -186,6 +190,8 @@ type DrilldownPreview struct {
 }
 
 type Response struct {
+	pricingStats       []store.ModelStat
+	pricingTimeline    []store.TimelinePoint
 	GeneratedAtMS      int64                     `json:"generated_at_ms"`
 	Granularity        string                    `json:"granularity"`
 	Coverage           *AnalyticsCoverage        `json:"coverage,omitempty"`
@@ -857,6 +863,7 @@ type EventsResponse struct {
 }
 
 type EventRow struct {
+	AnalyticsMetadata      usage.AnalyticsMetadata       `json:"-"`
 	RequestID              string                        `json:"request_id,omitempty"`
 	EventHash              string                        `json:"event_hash"`
 	TimestampMS            int64                         `json:"timestamp_ms"`
@@ -1073,6 +1080,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 		}
 	}
 
+	response.pricingStats = modelStats
 	queries := newAnalyticsQueryGroup(ctx, analyticsPrefetchConcurrency)
 	defer queries.Close()
 
@@ -1080,7 +1088,15 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	if req.Include.Timeline || req.Include.AnomalyPoints {
 		queries.Go(func(queryCtx context.Context) error {
 			var queryErr error
-			latencyPercentiles, queryErr = s.store.LatencyPercentilesWithFilter(queryCtx, filter, granularity, location)
+			if req.BoundedLatency {
+				rows, err := s.store.UsageEvents.GroupedLatencyWithFilter(queryCtx, filter, "timeline", granularity, location)
+				queryErr = err
+				for _, row := range rows {
+					latencyPercentiles = append(latencyPercentiles, store.LatencyPercentiles{BucketMS: row.BucketMS, P95LatencyMS: row.P95LatencyMS, P95TTFTMS: row.P95TTFTMS})
+				}
+			} else {
+				latencyPercentiles, queryErr = s.store.LatencyPercentilesWithFilter(queryCtx, filter, granularity, location)
+			}
 			return queryErr
 		})
 	}
@@ -1394,6 +1410,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 				return Response{}, err
 			}
 		}
+		response.pricingTimeline = points
 		timeline = buildTimeline(points, latencyPercentiles, granularity, location, prices)
 		if req.Include.Timeline {
 			response.Timeline = timeline
@@ -2158,33 +2175,34 @@ func buildFilter(req Request) store.AnalyticsFilter {
 		includeFailed = *req.Filters.IncludeFailed
 	}
 	return store.AnalyticsFilter{
-		FromMS:           req.FromMS,
-		ToMS:             req.ToMS,
-		SearchQuery:      req.SearchQuery,
-		SearchAPIKeyHash: req.SearchAPIKeyHash,
-		Models:           req.Filters.Models,
-		Providers:        req.Filters.Providers,
-		Accounts:         req.Filters.Accounts,
-		CredentialIDs:    req.Filters.CredentialIDs,
-		AuthFiles:        req.Filters.AuthFiles,
-		AuthIndices:      req.Filters.AuthIndices,
-		APIKeyHashes:     req.Filters.APIKeyHashes,
-		SourceHashes:     req.Filters.SourceHashes,
-		ProjectIDs:       req.Filters.ProjectIDs,
-		RequestTypes:     req.Filters.RequestTypes,
-		HeaderErrorKinds: req.Filters.HeaderErrorKinds,
-		HeaderErrorCodes: req.Filters.HeaderErrorCodes,
-		HeaderQuotaPlans: req.Filters.HeaderQuotaPlans,
-		HeaderTraceIDs:   req.Filters.HeaderTraceIDs,
-		IncludeFailed:    includeFailed,
-		FailedOnly:       req.Filters.FailedOnly,
-		MinLatencyMS:     req.Filters.MinLatencyMS,
-		CacheStatus:      req.Filters.CacheStatus,
+		ExcludeSupplementary: req.Filters.ExcludeSupplementary,
+		FromMS:               req.FromMS,
+		ToMS:                 req.ToMS,
+		SearchQuery:          req.SearchQuery,
+		SearchAPIKeyHash:     req.SearchAPIKeyHash,
+		Models:               req.Filters.Models,
+		Providers:            req.Filters.Providers,
+		Accounts:             req.Filters.Accounts,
+		CredentialIDs:        req.Filters.CredentialIDs,
+		AuthFiles:            req.Filters.AuthFiles,
+		AuthIndices:          req.Filters.AuthIndices,
+		APIKeyHashes:         req.Filters.APIKeyHashes,
+		SourceHashes:         req.Filters.SourceHashes,
+		ProjectIDs:           req.Filters.ProjectIDs,
+		RequestTypes:         req.Filters.RequestTypes,
+		HeaderErrorKinds:     req.Filters.HeaderErrorKinds,
+		HeaderErrorCodes:     req.Filters.HeaderErrorCodes,
+		HeaderQuotaPlans:     req.Filters.HeaderQuotaPlans,
+		HeaderTraceIDs:       req.Filters.HeaderTraceIDs,
+		IncludeFailed:        includeFailed,
+		FailedOnly:           req.Filters.FailedOnly,
+		MinLatencyMS:         req.Filters.MinLatencyMS,
+		CacheStatus:          req.Filters.CacheStatus,
 	}
 }
 
 func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
-	return usagehourly.SupportsAnalyticsFilter(filter)
+	return !filter.ExcludeSupplementary && usagehourly.SupportsAnalyticsFilter(filter)
 }
 
 type filterOptionStats struct {
@@ -4021,6 +4039,7 @@ func buildEvents(page store.EventsPage, totalCount int64) *EventsResponse {
 	items := make([]EventRow, 0, len(page.Items))
 	for _, item := range page.Items {
 		items = append(items, EventRow{
+			AnalyticsMetadata:      item.AnalyticsMetadata,
 			RequestID:              item.RequestID,
 			EventHash:              item.EventHash,
 			TimestampMS:            item.TimestampMS,
@@ -4613,7 +4632,11 @@ func sumCost(stats []store.ModelStat, prices map[string]store.ModelPrice) float6
 }
 
 func costForStat(stat store.ModelStat, prices map[string]store.ModelPrice) float64 {
-	return pricing.CostForModelCandidatesWithServiceTier([]string{stat.BillingModel, stat.Model}, stat.ServiceTier, pricing.ModelTokens{
+	return pricing.CostForModelCandidatesWithServiceTier([]string{stat.BillingModel, stat.Model}, stat.ServiceTier, pricingTokensForStat(stat), prices)
+}
+
+func pricingTokensForStat(stat store.ModelStat) pricing.ModelTokens {
+	return pricing.ModelTokens{
 		PricingModel:            stat.PricingModel,
 		ContextThresholdTokens:  stat.ContextThresholdTokens,
 		InputTokens:             stat.InputTokens,
@@ -4626,11 +4649,15 @@ func costForStat(stat store.ModelStat, prices map[string]store.ModelPrice) float
 		LongCachedTokens:        stat.LongCachedTokens,
 		LongCacheReadTokens:     stat.LongCacheReadTokens,
 		LongCacheCreationTokens: stat.LongCacheCreationTokens,
-	}, prices)
+	}
 }
 
 func costForTimelinePoint(point store.TimelinePoint, prices map[string]store.ModelPrice) float64 {
-	return pricing.CostForModelCandidatesWithServiceTier([]string{point.BillingModel, point.Model}, point.ServiceTier, pricing.ModelTokens{
+	return pricing.CostForModelCandidatesWithServiceTier([]string{point.BillingModel, point.Model}, point.ServiceTier, pricingTokensForTimelinePoint(point), prices)
+}
+
+func pricingTokensForTimelinePoint(point store.TimelinePoint) pricing.ModelTokens {
+	return pricing.ModelTokens{
 		PricingModel:            point.PricingModel,
 		ContextThresholdTokens:  point.ContextThresholdTokens,
 		InputTokens:             point.InputTokens,
@@ -4643,7 +4670,7 @@ func costForTimelinePoint(point store.TimelinePoint, prices map[string]store.Mod
 		LongCachedTokens:        point.LongCachedTokens,
 		LongCacheReadTokens:     point.LongCacheReadTokens,
 		LongCacheCreationTokens: point.LongCacheCreationTokens,
-	}, prices)
+	}
 }
 
 func costForHeatmapPoint(point store.HeatmapPoint, prices map[string]store.ModelPrice) float64 {

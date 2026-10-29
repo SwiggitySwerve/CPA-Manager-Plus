@@ -17,6 +17,9 @@ import (
 var ErrInvalidEventHash = usage.ErrInvalidEventHash
 
 type Repository interface {
+	HasSupplementaryEvents(ctx context.Context, fromMS, toMS int64) (bool, error)
+	GroupedLatencyWithFilter(ctx context.Context, filter AnalyticsFilter, dimension, granularity string, location *time.Location) ([]GroupedLatency, error)
+	ProviderModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]ProviderModelStat, error)
 	InsertBatch(ctx context.Context, events []model.UsageEvent) (model.InsertResult, error)
 	ExistingEventHashes(ctx context.Context, hashes []string) (map[string]struct{}, error)
 	ResolveCodexLegacyAccountKey(ctx context.Context, fields usageidentity.Fields) (string, bool, error)
@@ -253,6 +256,7 @@ func (r *repository) prepareUsageEvent(rawEvent model.UsageEvent) (preparedUsage
 			AuthType:         event.AuthType,
 		}, event.RequestServiceTier, event.ServiceTier, event.ResponseServiceTier)
 	}
+	usage.ApplyCanonicalAnalyticsFields(&event)
 	failed := 0
 	if event.Failed {
 		failed = 1

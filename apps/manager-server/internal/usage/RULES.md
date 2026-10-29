@@ -24,3 +24,14 @@ are repaired or rewritten by these read rules.
 outputs across normalization, legacy import, and persistence. The extraction's
 before/after fixture digests must agree. `TestSourceMatchesAccount` covers masked
 collisions, missing/mismatching hashes, and plaintext compatibility.
+
+## Analytics measurement projection
+
+`analytics.go` parses only explicitly retained source/execution, usage presence,
+component flags, record kind, effective/requested tiers and coherent timing fields.
+It never treats account source as instance identity. The SQL primary-record
+predicate belongs beside this parser and excludes explicit supplementary records;
+invalid and legacy envelopes remain unknown. `ReportedAnalyticsToken` distinguishes
+unreported zero from measured zero without erasing positive legacy counters.
+`ApplyCanonicalAnalyticsFields` applies validated canonical output and explicit
+effective tier only to new ingestion after identity computation, never archives.

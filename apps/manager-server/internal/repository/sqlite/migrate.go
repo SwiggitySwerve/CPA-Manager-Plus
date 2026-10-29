@@ -1044,6 +1044,9 @@ func Migrate(db *sql.DB) error {
 	if err := ensureUsageEventSnapshotColumns(db); err != nil {
 		return err
 	}
+	if err := EnsureAnalyticsSupplementaryIndex(db); err != nil {
+		return err
+	}
 	if err := ensureCodexInspectionRunColumns(db); err != nil {
 		return err
 	}

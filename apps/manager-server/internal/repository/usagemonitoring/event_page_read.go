@@ -161,6 +161,8 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 		coalesce(endpoint, ''),
 		coalesce(method, ''),
 		coalesce(path, ''),
+		coalesce(client_ip, ''),
+		coalesce(user_agent, ''),
 		coalesce(auth_index, ''),
 		coalesce(source, ''),
 		coalesce(source_hash, ''),
@@ -198,7 +200,8 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 		coalesce(parent_session_id, ''),
 		coalesce(access_token_sha256, ''),
 		generate,
-		stream
+		stream,
+		coalesce(raw_json, '')
 	from usage_events
 	where id in (select value from json_each(?))
 	order by timestamp_ms desc, id desc`, string(encoded))
@@ -211,7 +214,7 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 	for rows.Next() {
 		var item EventPageItem
 		var failed int
-		var responseMetadataJSON string
+		var responseMetadataJSON, rawEnvelope string
 		var responseModel, sessionID, parentSessionID, accessTokenSHA256 sql.NullString
 		var generateVal, streamVal sql.NullInt64
 		if err := rows.Scan(
@@ -227,6 +230,8 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 			&item.Endpoint,
 			&item.Method,
 			&item.Path,
+			&item.ClientIP,
+			&item.UserAgent,
 			&item.AuthIndex,
 			&item.Source,
 			&item.SourceHash,
@@ -265,9 +270,11 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 			&accessTokenSHA256,
 			&generateVal,
 			&streamVal,
+			&rawEnvelope,
 		); err != nil {
 			return nil, err
 		}
+		item.AnalyticsMetadata = usage.AnalyticsMetadataFromJSON(rawEnvelope)
 		item.Failed = failed != 0
 		item.ResponseModel = responseModel.String
 		item.SessionID = sessionID.String

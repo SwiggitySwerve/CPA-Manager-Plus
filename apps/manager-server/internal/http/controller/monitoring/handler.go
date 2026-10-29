@@ -23,6 +23,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := strings.TrimRight(r.URL.Path, "/")
+	if path == "/v0/management/monitoring/prox-analytics" {
+		h.handleProxAnalytics(w, r)
+		return
+	}
 	if path == "/v0/management/monitoring/header-snapshots" {
 		h.handleHeaderSnapshots(w, r)
 		return

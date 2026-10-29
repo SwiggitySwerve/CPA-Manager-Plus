@@ -187,40 +187,11 @@ func CostForModelWithServiceTier(modelName string, serviceTier string, tokens Mo
 // Callers should pass resolved/upstream model first, followed by the requested
 // display model or alias as a price fallback.
 func CostForModelCandidatesWithServiceTier(modelNames []string, serviceTier string, tokens ModelTokens, prices map[string]model.ModelPrice) float64 {
-	seen := map[string]bool{}
-	candidates := make([]string, 0, len(modelNames))
-	for _, modelName := range modelNames {
-		modelName = strings.TrimSpace(modelName)
-		if modelName == "" || seen[modelName] {
-			continue
-		}
-		seen[modelName] = true
-		candidates = append(candidates, modelName)
+	resolved, ok := ResolveModelPrice(modelNames, tokens.PricingModel, prices)
+	if !ok {
+		return 0
 	}
-	behaviorModel := ""
-	if len(candidates) > 0 {
-		behaviorModel = candidates[0]
-	}
-	if pricingModel := strings.TrimSpace(tokens.PricingModel); pricingModel != "" {
-		if price, ok := prices[pricingModel]; ok {
-			return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price)
-		}
-	}
-	for _, modelName := range candidates {
-		price, ok := prices[modelName]
-		if !ok {
-			continue
-		}
-		return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price)
-	}
-	for _, modelName := range candidates {
-		price, ok := officialGPT56Price(modelName)
-		if !ok {
-			continue
-		}
-		return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price)
-	}
-	return 0
+	return costForPriceWithServiceTier(resolved.BehaviorModel, serviceTier, tokens, resolved.Price)
 }
 
 // SumCost folds CostForModel over a slice of (model, tokens) tuples.
@@ -411,4 +382,51 @@ func clampTokens(value int64, total int64) int64 {
 
 func configuredPriceValue(value float64, configured bool) bool {
 	return configured || value > 0
+}
+
+// ResolvedPrice is the public owner contract for the existing candidate lookup.
+// BehaviorModel controls billing rules; MatchedModel identifies the chosen rate.
+type ResolvedPrice struct {
+	BehaviorModel string
+	MatchedModel  string
+	Price         model.ModelPrice
+}
+
+// ResolveModelPrice preserves explicit-band, configured-candidate, then built-in
+// fallback precedence. It does not infer billing identities from display aliases.
+func ResolveModelPrice(modelNames []string, pricingModelOverride string, prices map[string]model.ModelPrice) (ResolvedPrice, bool) {
+	seen := map[string]bool{}
+	candidates := make([]string, 0, len(modelNames))
+	for _, modelName := range modelNames {
+		modelName = strings.TrimSpace(modelName)
+		if modelName == "" || seen[modelName] {
+			continue
+		}
+		seen[modelName] = true
+		candidates = append(candidates, modelName)
+	}
+	behaviorModel := ""
+	if len(candidates) > 0 {
+		behaviorModel = candidates[0]
+	}
+	if pricingModel := strings.TrimSpace(pricingModelOverride); pricingModel != "" {
+		if price, ok := prices[pricingModel]; ok {
+			return ResolvedPrice{BehaviorModel: behaviorModel, MatchedModel: pricingModel, Price: price}, true
+		}
+	}
+	for _, modelName := range candidates {
+		price, ok := prices[modelName]
+		if !ok {
+			continue
+		}
+		return ResolvedPrice{BehaviorModel: behaviorModel, MatchedModel: modelName, Price: price}, true
+	}
+	for _, modelName := range candidates {
+		price, ok := officialGPT56Price(modelName)
+		if !ok {
+			continue
+		}
+		return ResolvedPrice{BehaviorModel: behaviorModel, MatchedModel: modelName, Price: price}, true
+	}
+	return ResolvedPrice{}, false
 }
