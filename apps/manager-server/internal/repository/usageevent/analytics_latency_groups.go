@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -105,4 +106,116 @@ func (r *repository) GroupedLatencyWithFilter(ctx context.Context, filter Analyt
 		}
 	}
 	return result, rows.Err()
+}
+
+// LatencyBreakdown holds latency ranks for the whole filtered range and for each
+// timeline bucket, model and provider, plus the providers seen for each model.
+type LatencyBreakdown struct {
+	Overall        GroupedLatency
+	Timeline       []GroupedLatency
+	Models         []GroupedLatency
+	Providers      []GroupedLatency
+	ModelProviders map[string][]string
+}
+
+// LatencyBreakdownWithFilter reads the filtered rows once and ranks latency and TTFT in Go
+// for the whole range and for each timeline bucket, model and provider. Each rank is
+// exactly what LatencySummaryWithFilter or GroupedLatencyWithFilter returns, at a fraction
+// of the cost on wide ranges: SQLite window ranking sorts every sample again per query.
+func (r *repository) LatencyBreakdownWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) (LatencyBreakdown, error) {
+	if location == nil {
+		location = time.UTC
+	}
+	where, args := analyticsWhere(filter)
+	query := `select timestamp_ms, ` + usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model") + `, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), latency_ms, ttft_ms from usage_events ` + where
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return LatencyBreakdown{}, err
+	}
+	defer rows.Close()
+	overall := map[string]*latencySamples{"": {}}
+	byBucket, byModel, byProvider := map[string]*latencySamples{}, map[string]*latencySamples{}, map[string]*latencySamples{}
+	pairs := map[string]map[string]bool{}
+	for rows.Next() {
+		var timestampMS int64
+		var model, provider string
+		var latency, ttft sql.NullFloat64
+		if err := rows.Scan(&timestampMS, &model, &provider, &latency, &ttft); err != nil {
+			return LatencyBreakdown{}, err
+		}
+		bucket := strconv.FormatInt(usage.AnalyticsBucketMS(timestampMS, granularity, location), 10)
+		if pairs[model] == nil {
+			pairs[model] = map[string]bool{}
+		}
+		pairs[model][provider] = true
+		for _, entry := range []struct {
+			groups map[string]*latencySamples
+			key    string
+		}{{overall, ""}, {byBucket, bucket}, {byModel, model}, {byProvider, provider}} {
+			group := entry.groups[entry.key]
+			if group == nil {
+				group = &latencySamples{}
+				entry.groups[entry.key] = group
+			}
+			if latency.Valid && latency.Float64 > 0 {
+				group.latency = append(group.latency, latency.Float64)
+			}
+			if ttft.Valid && ttft.Float64 > 0 {
+				group.ttft = append(group.ttft, ttft.Float64)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return LatencyBreakdown{}, err
+	}
+	result := LatencyBreakdown{Timeline: rankLatencyGroups(byBucket), Models: rankLatencyGroups(byModel), Providers: rankLatencyGroups(byProvider), ModelProviders: map[string][]string{}}
+	for i := range result.Timeline {
+		result.Timeline[i].BucketMS, _ = strconv.ParseInt(result.Timeline[i].Key, 10, 64)
+	}
+	if ranked := rankLatencyGroups(overall); len(ranked) > 0 {
+		result.Overall = ranked[0]
+	}
+	for model, providers := range pairs {
+		for provider := range providers {
+			result.ModelProviders[model] = append(result.ModelProviders[model], provider)
+		}
+		sort.Strings(result.ModelProviders[model])
+	}
+	return result, nil
+}
+
+type latencySamples struct{ latency, ttft []float64 }
+
+// rankLatencyGroups applies GroupedLatencyWithFilter's nearest rank,
+// ((count*95)+99)/100 counted from one, and its arithmetic mean of latency.
+func rankLatencyGroups(groups map[string]*latencySamples) []GroupedLatency {
+	keys := make([]string, 0, len(groups))
+	for key, group := range groups {
+		if len(group.latency) > 0 || len(group.ttft) > 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	nearest := func(values []float64) float64 {
+		sort.Float64s(values)
+		return values[(len(values)*95+99)/100-1]
+	}
+	result := make([]GroupedLatency, 0, len(keys))
+	for _, key := range keys {
+		group := groups[key]
+		row := GroupedLatency{Key: key}
+		if len(group.latency) > 0 {
+			sum := 0.0
+			for _, value := range group.latency {
+				sum += value
+			}
+			row.AverageLatencyMS = sql.NullFloat64{Float64: sum / float64(len(group.latency)), Valid: true}
+			row.P95LatencyMS = sql.NullFloat64{Float64: nearest(group.latency), Valid: true}
+		}
+		if len(group.ttft) > 0 {
+			row.P95TTFTMS = sql.NullFloat64{Float64: nearest(group.ttft), Valid: true}
+		}
+		result = append(result, row)
+	}
+	return result
 }

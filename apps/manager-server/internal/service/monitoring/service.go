@@ -117,15 +117,17 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 }
 
 type Request struct {
-	BoundedLatency   bool    `json:"-"`
-	FromMS           int64   `json:"from_ms"`
-	ToMS             int64   `json:"to_ms"`
-	NowMS            int64   `json:"now_ms"`
-	TimeZone         string  `json:"time_zone"`
-	SearchQuery      string  `json:"search_query"`
-	SearchAPIKeyHash string  `json:"search_api_key_hash"`
-	Filters          Filters `json:"filters"`
-	Include          Include `json:"include"`
+	BoundedLatency bool `json:"-"`
+	// SkipTimelinePercentiles leaves timeline p95s unset for a caller that ranks them itself.
+	SkipTimelinePercentiles bool    `json:"-"`
+	FromMS                  int64   `json:"from_ms"`
+	ToMS                    int64   `json:"to_ms"`
+	NowMS                   int64   `json:"now_ms"`
+	TimeZone                string  `json:"time_zone"`
+	SearchQuery             string  `json:"search_query"`
+	SearchAPIKeyHash        string  `json:"search_api_key_hash"`
+	Filters                 Filters `json:"filters"`
+	Include                 Include `json:"include"`
 }
 
 type Filters struct {
@@ -1085,7 +1087,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	defer queries.Close()
 
 	var latencyPercentiles []store.LatencyPercentiles
-	if req.Include.Timeline || req.Include.AnomalyPoints {
+	if (req.Include.Timeline || req.Include.AnomalyPoints) && !req.SkipTimelinePercentiles {
 		queries.Go(func(queryCtx context.Context) error {
 			var queryErr error
 			if req.BoundedLatency {
