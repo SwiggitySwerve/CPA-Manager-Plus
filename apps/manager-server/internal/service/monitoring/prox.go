@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/pricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -57,16 +59,43 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 	if limit == 0 {
 		limit = 100
 	}
-	req := Request{BoundedLatency: true, FromMS: q.FromMS, ToMS: q.ToMS, TimeZone: q.TimeZone, SearchQuery: q.Search, Filters: Filters{ExcludeSupplementary: excludeSupplementary, IncludeFailed: &includeFailed, FailedOnly: q.Outcome == "failed"}, Include: Include{Summary: true, SummaryProfile: "compact", SummaryPercentiles: true, Timeline: true, ModelStats: true, FilterSelectors: true, Granularity: q.Granularity, EventsPage: &EventsPage{Limit: limit, BeforeMS: q.BeforeMS, BeforeID: q.BeforeID}}}
+	req := Request{BoundedLatency: true, FromMS: q.FromMS, ToMS: q.ToMS, TimeZone: q.TimeZone, SearchQuery: q.Search, Filters: Filters{ExcludeSupplementary: excludeSupplementary, IncludeFailed: &includeFailed, FailedOnly: q.Outcome == "failed"}, Include: Include{Summary: true, SummaryProfile: "compact", Timeline: true, ModelStats: true, FilterSelectors: true, Granularity: q.Granularity, EventsPage: &EventsPage{Limit: limit, BeforeMS: q.BeforeMS, BeforeID: q.BeforeID}}}
 	if q.Model != "" {
 		req.Filters.Models = []string{q.Model}
 	}
 	if q.Provider != "" {
 		req.Filters.Providers = []string{q.Provider}
 	}
-	source, err := s.analytics(ctx, req)
+	req.SkipTimelinePercentiles = true
+	location, err := resolveAnalyticsLocation(q.TimeZone)
 	if err != nil {
 		return ProxAnalyticsResponse{}, err
+	}
+	// Overall, timeline and per-group latency ranks come from one raw scan that runs
+	// alongside the main read, which therefore skips its own percentile ranking.
+	queryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	filter := buildFilter(req)
+	var (
+		wait       sync.WaitGroup
+		latency    usageevent.LatencyBreakdown
+		latencyErr error
+	)
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		latency, latencyErr = s.store.UsageEvents.LatencyBreakdownWithFilter(queryCtx, filter, q.Granularity, location)
+	}()
+	source, err := s.analytics(ctx, req)
+	if err != nil {
+		cancel()
+	}
+	wait.Wait()
+	if err != nil {
+		return ProxAnalyticsResponse{}, err
+	}
+	if latencyErr != nil {
+		return ProxAnalyticsResponse{}, latencyErr
 	}
 	if source.Summary == nil || source.Events == nil {
 		return ProxAnalyticsResponse{}, errors.New("missing analytics section")
@@ -98,8 +127,8 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 	result.Summary.SuccessCalls = summary.SuccessCalls
 	result.Summary.FailureCalls = summary.FailureCalls
 	result.Summary.AverageLatencyMS = summary.AverageLatencyMS
-	result.Summary.P95LatencyMS = summary.P95LatencyMS
-	result.Summary.P95TTFTMS = summary.P95TTFTMS
+	result.Summary.P95LatencyMS = nullableFloat(latency.Overall.P95LatencyMS.Valid, latency.Overall.P95LatencyMS.Float64)
+	result.Summary.P95TTFTMS = nullableFloat(latency.Overall.P95TTFTMS.Valid, latency.Overall.P95TTFTMS.Float64)
 	modelGroups := map[string][]store.ModelStat{}
 	for _, stat := range source.pricingStats {
 		modelGroups[stat.Model] = append(modelGroups[stat.Model], stat)
@@ -117,12 +146,32 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 		countEstimate(&estimate, point.Calls)
 		timelineCosts[point.BucketMS] = pricing.CombineEstimates(timelineCosts[point.BucketMS], estimate)
 	}
-	for _, point := range source.Timeline {
-		result.Timeline = append(result.Timeline, ProxTimelinePoint{BucketMS: point.BucketMS, AnalyticsMetrics: AnalyticsMetrics{AnalyticsTokens: analyticsTokens(point.InputTokens, point.OutputTokens, point.CachedTokens, point.CacheReadTokens, point.CacheCreationTokens, point.ReasoningTokens, point.TotalTokens), Calls: point.Calls, SuccessCalls: point.Success, FailureCalls: point.Failure, Cost: timelineCosts[point.BucketMS], AverageLatencyMS: point.AvgLatencyMS, P95LatencyMS: point.P95LatencyMS, P95TTFTMS: point.P95TTFTMS}})
+	bucketLatency := make(map[int64]usageevent.GroupedLatency, len(latency.Timeline))
+	for _, bucket := range latency.Timeline {
+		bucketLatency[bucket.BucketMS] = bucket
 	}
-	// This owner query groups the entire filtered dataset, never the visible page.
-	providerStats, err := s.store.UsageEvents.ProviderModelStatsWithFilter(ctx, buildFilter(req))
-	if err != nil {
+	for _, point := range source.Timeline {
+		ranked := bucketLatency[point.BucketMS]
+		result.Timeline = append(result.Timeline, ProxTimelinePoint{BucketMS: point.BucketMS, AnalyticsMetrics: AnalyticsMetrics{AnalyticsTokens: analyticsTokens(point.InputTokens, point.OutputTokens, point.CachedTokens, point.CacheReadTokens, point.CacheCreationTokens, point.ReasoningTokens, point.TotalTokens), Calls: point.Calls, SuccessCalls: point.Success, FailureCalls: point.Failure, Cost: timelineCosts[point.BucketMS], AverageLatencyMS: point.AvgLatencyMS, P95LatencyMS: nullableFloat(ranked.P95LatencyMS.Valid, ranked.P95LatencyMS.Float64), P95TTFTMS: nullableFloat(ranked.P95TTFTMS.Valid, ranked.P95TTFTMS.Float64)}})
+	}
+	// When no raw event in range was archived and every model in it was served by exactly
+	// one provider, the provider breakdown is the model stats regrouped. Otherwise group
+	// the raw rows by provider; this owner query covers the whole filtered dataset.
+	providerOf := map[string]string{}
+	regroup := rawCoverage.RawDeletedEventCount == 0
+	for _, stat := range source.pricingStats {
+		if providers := latency.ModelProviders[stat.Model]; len(providers) == 1 {
+			providerOf[stat.Model] = providers[0]
+		} else {
+			regroup = false
+		}
+	}
+	var providerStats []usageevent.ProviderModelStat
+	if regroup {
+		for _, stat := range source.pricingStats {
+			providerStats = append(providerStats, usageevent.ProviderModelStat{ModelStat: stat, Provider: providerOf[stat.Model]})
+		}
+	} else if providerStats, err = s.store.UsageEvents.ProviderModelStatsWithFilter(ctx, filter); err != nil {
 		return ProxAnalyticsResponse{}, err
 	}
 	providerGroups := map[string][]store.ModelStat{}
@@ -138,11 +187,7 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 		}
 		result.Providers = append(result.Providers, AnalyticsBreakdown{Key: key, Label: label, AnalyticsMetrics: metricsFromStats(providerGroups[key], prices)})
 	}
-	for _, dimension := range []string{"model", "provider"} {
-		groups, err := s.store.UsageEvents.GroupedLatencyWithFilter(ctx, buildFilter(req), dimension, q.Granularity, nil)
-		if err != nil {
-			return ProxAnalyticsResponse{}, err
-		}
+	for dimension, groups := range map[string][]usageevent.GroupedLatency{"model": latency.Models, "provider": latency.Providers} {
 		target := result.Models
 		if dimension == "provider" {
 			target = result.Providers

@@ -55,14 +55,9 @@ func EstimateCost(names []string, tier string, tokens ModelTokens, prices map[st
 	if usagePresent == nil {
 		result.Reasons = append(result.Reasons, "usage-presence-unknown")
 	}
-	// There is no TTL tariff dimension in the current price book. Exclude writes.
-	if tokens.CacheCreationTokens > 0 {
-		result.Reasons = append(result.Reasons, "cache-write-lifetime-unsupported")
-		tokens.InputTokens = maxInt64(tokens.InputTokens-tokens.CacheCreationTokens, 0)
-		tokens.LongInputTokens = maxInt64(tokens.LongInputTokens-tokens.LongCacheCreationTokens, 0)
-		tokens.CacheCreationTokens = 0
-		tokens.LongCacheCreationTokens = 0
-	}
+	// Cache writes are priced as the dashboard prices them: at the configured
+	// cache-write rate, else the prompt rate. The price book has no TTL dimension,
+	// so the configured write rate stands for every lifetime.
 	if !configuredPriceValue(effective.Prompt, effective.PromptConfigured) && tokens.InputTokens > tokens.CachedTokens+tokens.CacheReadTokens {
 		result.Reasons = append(result.Reasons, "input-rate-unavailable")
 	}
