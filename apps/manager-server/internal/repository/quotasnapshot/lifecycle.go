@@ -1767,6 +1767,23 @@ func reconcileAbsentWindows(
 	return nil
 }
 
+func (r *repository) ActiveAccountKeys(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `select distinct account_key from account_quota_windows where availability <> 'inactive'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
 func (r *repository) DeactivateAccounts(ctx context.Context, accountKeys []string, nowMS int64) (int64, error) {
 	if len(accountKeys) == 0 {
 		return 0, nil

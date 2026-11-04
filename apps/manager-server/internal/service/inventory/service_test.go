@@ -154,6 +154,13 @@ func (h *harness) refresh(reason string) Result {
 	return res
 }
 
+// settle primes a fresh service: one observing pass and the one-time sweep pass.
+func (h *harness) settle() {
+	h.t.Helper()
+	h.refresh(ReasonPoll)
+	h.refresh(ReasonPoll)
+}
+
 func (h *harness) seedCooldown(name, authIndex, provider string) {
 	h.t.Helper()
 	if _, err := h.st.UpsertQuotaCooldown(context.Background(), store.QuotaCooldownUpsert{
@@ -363,11 +370,14 @@ func TestRemovalReconcilesAccountMetadata(t *testing.T) {
 		t.Fatalf("a listed credential's metadata was changed by the first listing")
 	}
 
-	// codex-a is deleted at the source, behind this manager's back.
+	h.refresh(ReasonPoll) // the one-time sweep pass
+
+	// codex-a is deleted at the source, behind this manager's back; one absence is not enough.
 	h.primary.set(codexC)
+	h.refresh(ReasonPoll)
 	res := h.refresh(ReasonPoll)
 
-	if !res.Changed || res.Version == first.Version || strings.Join(res.Removed, ",") != "codex-a.json" {
+	if res.Version == first.Version || strings.Join(res.Removed, ",") != "codex-a.json" {
 		t.Fatalf("second listing = %#v, want codex-a.json removed under a new version", res)
 	}
 	if got := h.cooldownStatus("codex-a.json"); got != "not-active" {
@@ -401,9 +411,10 @@ func TestRemovalReconcilesAccountMetadata(t *testing.T) {
 func TestRemovalFromAnExtraUpstreamReconciles(t *testing.T) {
 	h := newHarness(t)
 	h.seedMetadata()
-	h.refresh(ReasonPoll)
+	h.settle()
 
 	h.extra.set(claudeD)
+	h.refresh(ReasonPoll)
 	res := h.refresh(ReasonPoll)
 
 	if strings.Join(res.Removed, ",") != "claude-b.json" {
@@ -439,9 +450,11 @@ func TestAddedCredentialAppearsAndReturningOneIsRestored(t *testing.T) {
 	h := newHarness(t)
 	runID := h.seedMetadata()
 	before := h.refresh(ReasonPoll)
+	h.refresh(ReasonPoll)
 
 	// codex-a goes away and its inspection rows are hidden.
 	h.primary.set(codexC)
+	h.refresh(ReasonPoll)
 	h.refresh(ReasonPoll)
 	if h.visibleResults(runID)["codex-a.json"] {
 		t.Fatalf("precondition: codex-a rows should be hidden")
@@ -479,6 +492,7 @@ func TestFailedOrPartialListingChangesNothing(t *testing.T) {
 				h := newHarness(t)
 				runID := h.seedMetadata()
 				first := h.refresh(ReasonPoll)
+				h.refresh(ReasonPoll)
 
 				// The other upstream really did lose a credential; the failure of this one must still hold everything back.
 				bad, other := h.extra, h.primary
@@ -512,6 +526,7 @@ func TestFailedOrPartialListingChangesNothing(t *testing.T) {
 
 				// Once the upstream answers again the pending removal is applied.
 				bad.setMode("")
+				h.refresh(ReasonPoll)
 				res = h.refresh(ReasonPoll)
 				if len(res.Removed) != 1 {
 					t.Errorf("after recovery removed = %v, want exactly the one deleted credential", res.Removed)
@@ -524,12 +539,12 @@ func TestFailedOrPartialListingChangesNothing(t *testing.T) {
 func TestAnUpstreamTurningEmptyNeedsToRepeat(t *testing.T) {
 	h := newHarness(t)
 	runID := h.seedMetadata()
-	h.refresh(ReasonPoll)
+	h.settle()
 
 	// An unmounted auth directory looks like an empty list.
 	h.primary.set()
 	held := h.refresh(ReasonPoll)
-	if !held.Held {
+	if !held.Held || len(held.Removed) != 0 {
 		t.Fatalf("first empty poll = %#v, want it held", held)
 	}
 	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending || !h.visibleResults(runID)["codex-a.json"] {
@@ -563,10 +578,11 @@ func TestAnalyticsHistoryIsUntouchedByReconcile(t *testing.T) {
 	if before.count != 2 {
 		t.Fatalf("seeded %d usage events, want 2", before.count)
 	}
-	h.refresh(ReasonPoll)
+	h.settle()
 
 	h.primary.set(codexC)
 	h.extra.set(claudeD)
+	h.refresh(ReasonPoll)
 	res := h.refresh(ReasonPoll)
 	if len(res.Removed) != 2 {
 		t.Fatalf("removed = %v, want codex-a and claude-b", res.Removed)
@@ -585,7 +601,8 @@ func TestAnalyticsHistoryIsUntouchedByReconcile(t *testing.T) {
 func TestProxiedDeleteReconcilesWithoutWaitingForAPoll(t *testing.T) {
 	h := newHarness(t)
 	runID := h.seedMetadata()
-	h.refresh(ReasonPoll) // the watcher has seen the credentials; no poll runs after this
+	h.settle()           // the watcher has seen the credentials; no poll runs after this
+	h.extra.set(claudeD) // claude-b is also missing from the listing the delete triggers, but nothing proves it was deleted
 
 	proxy := proxysvc.New(h.config, h.st).WithExtraUpstreams([]string{h.extra.URL}).WithAuthFilesChangeHook(h.svc.Notify)
 	serve := func(method, target string) *httptest.ResponseRecorder {
@@ -618,7 +635,7 @@ func TestProxiedDeleteReconcilesWithoutWaitingForAPoll(t *testing.T) {
 		t.Errorf("metadata of the deleted credential survived the proxied delete")
 	}
 	if h.candidateStatus("claude-b.json") != model.AccountActionStatusPending {
-		t.Errorf("an unrelated credential was touched")
+		t.Errorf("a credential the delete did not name was removed along with it")
 	}
 }
 
@@ -626,7 +643,7 @@ func TestProxiedDeleteOfTheLastCredentialDoesNotWaitForConfirmation(t *testing.T
 	h := newHarness(t)
 	h.primary.set(codexA)
 	h.seedMetadata()
-	h.refresh(ReasonPoll)
+	h.settle()
 
 	proxy := proxysvc.New(h.config, h.st).WithExtraUpstreams([]string{h.extra.URL}).WithAuthFilesChangeHook(h.svc.Notify)
 	w := httptest.NewRecorder()
@@ -693,5 +710,75 @@ func TestFreshListsOnlyWhenTheLastAttemptIsOlderThanMaxAge(t *testing.T) {
 	h.svc.Fresh(ctx, 2*time.Second)
 	if failed != got || h.primary.listingCount() != 3 {
 		t.Fatalf("Fresh against a failing upstream = %#v after %d listings, want the kept snapshot from a single attempt", failed, h.primary.listingCount())
+	}
+}
+
+// restart simulates a manager restart: same database, a new service with no memory of the last listing.
+func (h *harness) restart() {
+	h.t.Helper()
+	cfg := config.Config{CPAUpstreamURL: h.primary.URL, ManagementKey: "management-key"}
+	h.svc = New(h.st, managerconfig.New(cfg, nil, nil), []string{h.extra.URL})
+	h.svc.now = func() time.Time { return time.UnixMilli(h.nowMS) }
+}
+
+func TestPartialListingDoesNotRemoveUntilAbsentOnTwoConsecutivePolls(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.refresh(ReasonPoll)
+	h.refresh(ReasonPoll)
+
+	// A non-empty but partial answer (codex-a missing) once, then the full list again.
+	h.primary.set(codexC)
+	h.refresh(ReasonPoll)
+	if got := h.candidateStatus("codex-a.json"); got != model.AccountActionStatusPending {
+		t.Fatalf("candidate status after one partial poll = %q, want pending", got)
+	}
+	h.primary.set(codexA, codexC)
+	h.refresh(ReasonPoll)
+	h.primary.set(codexC)
+	h.refresh(ReasonPoll) // absent once again, not twice in a row
+	if got := h.candidateStatus("codex-a.json"); got != model.AccountActionStatusPending {
+		t.Fatalf("a name that reappeared in between must start counting again, got %q", got)
+	}
+
+	res := h.refresh(ReasonPoll)
+	if strings.Join(res.Removed, ",") != "codex-a.json" || h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("second consecutive absence = %#v, want codex-a removed", res)
+	}
+}
+
+func TestRestartSweepsMetadataAndQuotaWindowsOfCredentialsRemovedWhileDown(t *testing.T) {
+	h := newHarness(t)
+	runID := h.seedMetadata()
+	h.primary.set(codexC) // codex-a was deleted while the manager was down
+	h.restart()
+
+	for i := 0; i < 3; i++ {
+		h.refresh(ReasonPoll)
+	}
+	if n := h.quotaWindows("codex-a.json", "codex", "idx-a", false); n != 0 {
+		t.Errorf("credential removed while down still has %d active quota windows", n)
+	}
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted || h.visibleResults(runID)["codex-a.json"] {
+		t.Errorf("name-keyed metadata of the credential removed while down was not swept")
+	}
+	if n := h.quotaWindows("claude-b.json", "claude", "idx-b", false); n != 1 {
+		t.Errorf("a still-listed credential has %d quota windows, want 1", n)
+	}
+}
+
+func TestConcurrentFreshCallsListOnce(t *testing.T) {
+	h := newHarness(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.svc.Fresh(context.Background(), 2*time.Second)
+		}()
+	}
+	wg.Wait()
+	if n := h.primary.listingCount(); n != 1 {
+		t.Fatalf("primary listed %d times for 8 concurrent Fresh calls, want 1", n)
 	}
 }

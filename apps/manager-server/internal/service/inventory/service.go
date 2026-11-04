@@ -8,8 +8,10 @@
 // inspection results and ownership, quota-snapshot current windows). Usage,
 // request and dollar history is never touched.
 //
-// Absence is only evidence when every upstream answered with a real list. A
-// failed, partial or malformed listing changes nothing.
+// Absence is only evidence when every upstream answered with a real list, and a
+// name only counts as removed once it is absent from two consecutive complete
+// listings. The one exception is a name a proxied delete just removed through
+// this manager. A failed, partial or malformed listing changes nothing.
 package inventory
 
 import (
@@ -34,13 +36,15 @@ import (
 const (
 	// PollInterval is how often the watcher lists the upstreams.
 	PollInterval = 5 * time.Second
-	// refreshTimeout bounds one listing-and-reconcile pass.
-	refreshTimeout = 20 * time.Second
-	// emptyConfirmations is how many consecutive polls must report an upstream
-	// as empty before that counts. An unmounted or wiped auth directory looks
-	// like an empty list; a real "last credential deleted" through this manager
-	// skips the wait because the mutation itself is the evidence.
-	emptyConfirmations = 2
+	// listTimeout bounds the listing half of one pass.
+	listTimeout = 20 * time.Second
+	// reconcileTimeout bounds the database half of one pass. It is separate so a
+	// slow write is not cut short by (or charged to) the listing budget.
+	reconcileTimeout = 2 * time.Minute
+	// absentConfirmations is how many consecutive complete listings must lack a
+	// name before it counts as removed. An unmounted auth directory or a partial
+	// answer looks like missing names; one listing is not proof.
+	absentConfirmations = 2
 
 	ReasonPoll     = "poll"
 	ReasonMutation = "mutation"
@@ -63,9 +67,9 @@ type Result struct {
 	Version string
 	// Changed is true when the membership version moved (or this is the first listing).
 	Changed bool
-	// Held is true when a listing was complete but an upstream reported itself empty
-	// for the first time, so nothing was applied yet.
-	Held    bool
+	// Held is true while some names are absent but not yet confirmed.
+	Held bool
+	// Added and Removed are names that newly counted as listed or as removed.
 	Added   []string
 	Removed []string
 }
@@ -84,15 +88,20 @@ type Service struct {
 	extra  []string
 	now    func() time.Time
 
-	mu          sync.Mutex
-	primed      bool
+	// mu serialises passes and guards the working state below.
+	mu      sync.Mutex
+	primed  bool
+	swept   bool                         // the one-time sweep of rows from before this process ran has been done
+	files   map[string]cpaauthfiles.File // "upstream\x00name" -> file, from the last applied listing (plus names still pending removal)
+	names   map[string]struct{}          // applied live names and runtime ids, including names pending removal
+	missing map[string]int               // name -> consecutive complete listings it was absent from
+
+	// snapMu guards what readers see, so a slow pass never blocks Snapshot.
+	snapMu      sync.Mutex
 	version     string
 	syncedAt    time.Time
 	lastAttempt time.Time
 	count       int
-	files       map[string]cpaauthfiles.File // "upstream\x00name" -> file, from the last applied listing
-	names       map[string]struct{}          // live names and runtime ids
-	emptyStreak map[string]int               // upstream -> consecutive empty complete listings
 	lastErr     string
 }
 
@@ -104,11 +113,11 @@ func New(st *store.Store, setups SetupResolver, extraUpstreams []string) *Servic
 // NewWithLister is New with an explicit lister.
 func NewWithLister(st *store.Store, setups SetupResolver, lister Lister, extraUpstreams []string) *Service {
 	s := &Service{
-		setups:      setups,
-		lister:      lister,
-		store:       st,
-		now:         time.Now,
-		emptyStreak: map[string]int{},
+		setups:  setups,
+		lister:  lister,
+		store:   st,
+		now:     time.Now,
+		missing: map[string]int{},
 	}
 	for _, raw := range extraUpstreams {
 		if base := cpa.NormalizeBaseURL(raw); base != "" {
@@ -124,7 +133,7 @@ func (s *Service) Start(ctx context.Context) {
 		ticker := time.NewTicker(PollInterval)
 		defer ticker.Stop()
 		for {
-			s.poll(ctx)
+			s.run(ctx, ReasonPoll, cpaauthfiles.MutationNotice{})
 			select {
 			case <-ctx.Done():
 				return
@@ -134,10 +143,15 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-func (s *Service) poll(ctx context.Context) {
-	runCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-	defer cancel()
-	if _, err := s.Refresh(runCtx, ReasonPoll); err != nil && ctx.Err() == nil {
+// run takes the pass lock, then does one pass and logs a new failure.
+func (s *Service) run(ctx context.Context, reason string, notice cpaauthfiles.MutationNotice) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runLocked(ctx, reason, notice)
+}
+
+func (s *Service) runLocked(ctx context.Context, reason string, notice cpaauthfiles.MutationNotice) {
+	if _, err := s.refreshLocked(ctx, reason, notice); err != nil && ctx.Err() == nil {
 		s.logOnce(err)
 	}
 }
@@ -145,11 +159,11 @@ func (s *Service) poll(ctx context.Context) {
 // logOnce logs an error only when it differs from the previous one, so a down
 // upstream does not log every five seconds.
 func (s *Service) logOnce(err error) {
-	s.mu.Lock()
+	s.snapMu.Lock()
 	msg := err.Error()
 	repeat := s.lastErr == msg
 	s.lastErr = msg
-	s.mu.Unlock()
+	s.snapMu.Unlock()
 	if !repeat {
 		log.Printf("inventory: refresh failed; metadata left unchanged: %v", err)
 	}
@@ -157,8 +171,8 @@ func (s *Service) logOnce(err error) {
 
 // Snapshot returns the last applied inventory version.
 func (s *Service) Snapshot() Snapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
 	snap := Snapshot{Version: s.version, Count: s.count}
 	if !s.syncedAt.IsZero() {
 		snap.SyncedAtMS = s.syncedAt.UnixMilli()
@@ -167,115 +181,155 @@ func (s *Service) Snapshot() Snapshot {
 }
 
 // Fresh returns the last applied inventory, listing the upstreams first when no
-// pass has been attempted within maxAge. A failing upstream is retried at most
-// once per maxAge however many callers ask.
+// pass has been attempted within maxAge. The age is checked after taking the
+// pass lock, so concurrent callers share one listing, and a failing upstream is
+// retried at most once per maxAge however many callers ask.
 func (s *Service) Fresh(ctx context.Context, maxAge time.Duration) Snapshot {
 	s.mu.Lock()
+	s.snapMu.Lock()
 	stale := s.lastAttempt.IsZero() || s.now().Sub(s.lastAttempt) > maxAge
-	s.mu.Unlock()
+	s.snapMu.Unlock()
 	if stale {
-		s.poll(ctx)
+		s.runLocked(ctx, ReasonPoll, cpaauthfiles.MutationNotice{})
 	}
+	s.mu.Unlock()
 	return s.Snapshot()
 }
 
 // Notify is for callers that just mutated auth files through this manager. It
-// reconciles immediately and does not wait for the next poll.
-func (s *Service) Notify(ctx context.Context) {
-	runCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-	defer cancel()
-	if _, err := s.Refresh(runCtx, ReasonMutation); err != nil && ctx.Err() == nil {
-		s.logOnce(err)
-	}
+// lists immediately instead of waiting for the next poll, and treats the names
+// the notice says were deleted as removed without a second listing.
+func (s *Service) Notify(ctx context.Context, notice cpaauthfiles.MutationNotice) {
+	s.run(ctx, ReasonMutation, notice)
 }
 
-// Refresh lists every upstream and, when the membership changed, reconciles.
-// Any listing failure returns an error before anything is changed.
+// Refresh runs one pass. Any listing failure returns an error before anything is changed.
 func (s *Service) Refresh(ctx context.Context, reason string) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastAttempt = s.now()
+	return s.refreshLocked(ctx, reason, cpaauthfiles.MutationNotice{})
+}
 
-	setup, ok, err := s.setups.ResolveSetup(ctx)
+func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaauthfiles.MutationNotice) (Result, error) {
+	s.snapMu.Lock()
+	s.lastAttempt = s.now()
+	prevVersion := s.version
+	s.snapMu.Unlock()
+
+	listCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	setup, ok, err := s.setups.ResolveSetup(listCtx)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve setup: %w", err)
 	}
 	if !ok {
 		return Result{}, nil
 	}
-	bases := s.bases(setup.CPAUpstreamURL)
-
 	next := make(map[string]cpaauthfiles.File)
-	counts := make(map[string]int, len(bases))
-	for _, base := range bases {
-		files, err := s.lister.FetchInventory(ctx, base, setup.ManagementKey)
+	for _, base := range s.bases(setup.CPAUpstreamURL) {
+		files, err := s.lister.FetchInventory(listCtx, base, setup.ManagementKey)
 		if err != nil {
-			return Result{Version: s.version}, fmt.Errorf("list %s: %w", base, err)
+			return Result{Version: prevVersion}, fmt.Errorf("list %s: %w", base, err)
 		}
-		counts[base] = len(files)
 		for _, file := range files {
 			next[fileKey(base, file.Name)] = file
 		}
 	}
+	version := versionOf(next)
+	listed := namesOf(next)
+	listedCount := len(next)
+	result := Result{Version: version, Changed: !s.primed || version != prevVersion}
 
-	if reason != ReasonMutation && s.holdEmpty(bases, counts) {
-		return Result{Version: s.version, Held: true}, nil
+	if !s.primed {
+		// First complete listing of this process: only observe. Rows left from
+		// before the process started are swept on the next pass, once a second
+		// listing agrees.
+		s.primed = true
+		s.files, s.names = next, listed
+		s.publish(version, listedCount)
+		return result, nil
 	}
-	for _, base := range bases {
-		if counts[base] > 0 {
-			delete(s.emptyStreak, base)
+
+	// Names applied as live that this listing lacks, and for how many listings in a row.
+	nextMissing := map[string]int{}
+	confirmed := map[string]struct{}{}
+	for name := range s.names {
+		if _, ok := listed[name]; ok {
+			continue
+		}
+		if s.deletedByMutation(name, notice) || s.missing[name]+1 >= absentConfirmations {
+			confirmed[name] = struct{}{}
+			continue
+		}
+		nextMissing[name] = s.missing[name] + 1
+	}
+	effective := make(map[string]struct{}, len(listed)+len(nextMissing))
+	for name := range listed {
+		effective[name] = struct{}{}
+		if _, ok := s.names[name]; !ok {
+			result.Added = append(result.Added, name)
 		}
 	}
+	for name := range nextMissing {
+		effective[name] = struct{}{}
+	}
+	for name := range confirmed {
+		result.Removed = append(result.Removed, name)
+	}
+	sort.Strings(result.Added)
+	sort.Strings(result.Removed)
+	result.Held = len(nextMissing) > 0
 
-	version := versionOf(next)
-	liveNames := namesOf(next)
-	result := Result{Version: version, Changed: !s.primed || version != s.version}
-	result.Added, result.Removed = diffNames(s.names, liveNames)
-	namesChanged := !s.primed || len(result.Added) > 0 || len(result.Removed) > 0
-
-	if namesChanged {
-		if err := s.reconcile(ctx, s.files, next, liveNames); err != nil {
-			// Keep the previous applied state so the next pass retries.
+	if !s.swept || len(confirmed) > 0 || len(result.Added) > 0 {
+		quotaKeys, err := s.quotaKeysToDeactivate(ctx, next, confirmed, effective)
+		if err != nil {
 			return result, fmt.Errorf("reconcile: %w", err)
 		}
+		// The writes get their own budget: they must not be cut short by, or
+		// charged to, the listing deadline, and they outlive a cancelled request.
+		writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
+		defer cancelWrite()
+		if err := s.reconcile(writeCtx, effective, quotaKeys); err != nil {
+			// State is not advanced, so the next pass retries.
+			return result, fmt.Errorf("reconcile: %w", err)
+		}
+		s.swept = true
 	}
-	s.primed = true
-	s.version = version
-	s.files = next
-	s.names = liveNames
-	s.count = len(next)
-	s.syncedAt = s.now()
+
+	// Keep the files of names still pending removal so their quota keys survive until confirmed.
+	for key, file := range s.files {
+		if _, pending := nextMissing[file.Name]; pending {
+			next[key] = file
+		}
+	}
+	s.files, s.names, s.missing = next, effective, nextMissing
+	s.publish(version, listedCount)
 	return result, nil
 }
 
-// holdEmpty reports whether an upstream listed as empty has not yet been
-// confirmed. It counts the streak as a side effect.
-func (s *Service) holdEmpty(bases []string, counts map[string]int) bool {
-	hold := false
-	for _, base := range bases {
-		if counts[base] > 0 {
-			continue
-		}
-		if s.primed && s.countFor(base) == 0 {
-			continue // it was already empty; nothing is being removed
-		}
-		s.emptyStreak[base]++
-		if s.emptyStreak[base] < emptyConfirmations {
-			hold = true
-		}
-	}
-	return hold
+func (s *Service) publish(version string, count int) {
+	s.snapMu.Lock()
+	s.version, s.count, s.syncedAt = version, count, s.now()
+	s.snapMu.Unlock()
 }
 
-func (s *Service) countFor(base string) int {
-	n := 0
-	prefix := base + "\x00"
-	for key := range s.files {
-		if strings.HasPrefix(key, prefix) {
-			n++
+// deletedByMutation reports whether a proxied delete just removed this name.
+func (s *Service) deletedByMutation(name string, notice cpaauthfiles.MutationNotice) bool {
+	for _, deleted := range notice.Deleted {
+		if strings.TrimSpace(deleted) == name {
+			return true
 		}
 	}
-	return n
+	if !notice.DeletedAll || notice.Upstream == "" {
+		return false
+	}
+	prefix := cpa.NormalizeBaseURL(notice.Upstream) + "\x00"
+	for key, file := range s.files {
+		if strings.HasPrefix(key, prefix) && (file.Name == name || file.ID == name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) bases(primary string) []string {
@@ -320,29 +374,9 @@ func namesOf(files map[string]cpaauthfiles.File) map[string]struct{} {
 	return names
 }
 
-func diffNames(prev, next map[string]struct{}) (added, removed []string) {
-	for name := range next {
-		if _, ok := prev[name]; !ok {
-			added = append(added, name)
-		}
-	}
-	for name := range prev {
-		if _, ok := next[name]; !ok {
-			removed = append(removed, name)
-		}
-	}
-	sort.Strings(added)
-	sort.Strings(removed)
-	return added, removed
-}
-
-// reconcile applies a complete, successful listing to the metadata tables.
-func (s *Service) reconcile(
-	ctx context.Context,
-	prev map[string]cpaauthfiles.File,
-	next map[string]cpaauthfiles.File,
-	live map[string]struct{},
-) error {
+// reconcile applies confirmed absence to the metadata tables. live holds every
+// name that must keep its rows.
+func (s *Service) reconcile(ctx context.Context, live map[string]struct{}, quotaKeys []string) error {
 	isLive := func(name string) bool {
 		_, ok := live[strings.TrimSpace(name)]
 		return ok
@@ -368,7 +402,11 @@ func (s *Service) reconcile(
 		errs = append(errs, fmt.Errorf("account action candidates: %w", err))
 	}
 
-	if _, err := s.store.CodexInspections.SyncResultCredentialVisibility(ctx, isLive, nowMS); err != nil {
+	liveNames := make([]string, 0, len(live))
+	for name := range live {
+		liveNames = append(liveNames, name)
+	}
+	if _, err := s.store.CodexInspections.SyncResultCredentialVisibility(ctx, liveNames, nowMS); err != nil {
 		errs = append(errs, fmt.Errorf("codex inspection results: %w", err))
 	}
 
@@ -387,20 +425,30 @@ func (s *Service) reconcile(
 		}
 	}
 
-	if keys := removedAccountKeys(prev, next, live); len(keys) > 0 {
-		if _, err := s.store.QuotaSnapshots.DeactivateAccounts(ctx, keys, nowMS); err != nil {
+	if len(quotaKeys) > 0 {
+		if _, err := s.store.QuotaSnapshots.DeactivateAccounts(ctx, quotaKeys, nowMS); err != nil {
 			errs = append(errs, fmt.Errorf("quota snapshot windows: %w", err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// removedAccountKeys returns the quota-window account keys of credentials that
-// were in prev and are gone from next. Quota windows are keyed by an opaque
-// identity derived from the credential's fields, not by file name, so the keys
-// come from the previous listing. A key that a still-listed credential also
-// produces is never returned.
-func removedAccountKeys(prev, next map[string]cpaauthfiles.File, live map[string]struct{}) []string {
+// quotaKeysToDeactivate returns the quota-window account keys of credentials
+// that were removed. Quota windows are keyed by an opaque identity derived from
+// the credential's fields, not by file name, so:
+//   - for names confirmed removed in this process, the keys come from their
+//     last listed file;
+//   - on the first sweep, active window keys are read from the database, and a
+//     key counts only when it embeds an auth file name that is no longer live
+//     (file-based keys only; Codex member and workspace keys name no file).
+//
+// A key that a still-listed credential also produces is never returned.
+func (s *Service) quotaKeysToDeactivate(
+	ctx context.Context,
+	next map[string]cpaauthfiles.File,
+	confirmed map[string]struct{},
+	live map[string]struct{},
+) ([]string, error) {
 	liveKeys := map[string]struct{}{}
 	for _, file := range next {
 		for _, key := range accountKeys(file) {
@@ -409,23 +457,39 @@ func removedAccountKeys(prev, next map[string]cpaauthfiles.File, live map[string
 	}
 	seen := map[string]struct{}{}
 	var keys []string
-	for _, file := range prev {
-		if _, ok := live[strings.TrimSpace(file.Name)]; ok {
+	add := func(key string) {
+		if _, isLive := liveKeys[key]; isLive {
+			return
+		}
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	for _, file := range s.files {
+		if _, gone := confirmed[strings.TrimSpace(file.Name)]; !gone {
 			continue
 		}
 		for _, key := range accountKeys(file) {
-			if _, isLive := liveKeys[key]; isLive {
-				continue
+			add(key)
+		}
+	}
+	if !s.swept {
+		active, err := s.store.QuotaSnapshots.ActiveAccountKeys(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list active quota windows: %w", err)
+		}
+		for _, key := range active {
+			if name, ok := usageidentity.AuthFileOfKey(key); ok {
+				if _, stillLive := live[name]; !stillLive {
+					add(key)
+				}
 			}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-			keys = append(keys, key)
 		}
 	}
 	sort.Strings(keys)
-	return keys
+	return keys, nil
 }
 
 // accountKeys are the identities quota windows of this credential may be stored under.

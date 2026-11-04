@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -659,5 +660,60 @@ func TestDisableOwnershipWritesRetrySQLiteBusy(t *testing.T) {
 			}
 			test.verify(t, repository)
 		})
+	}
+}
+
+func TestSyncResultCredentialVisibilityHidesAndRestoresBySet(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repository := New(db)
+	ctx := context.Background()
+	run, err := repository.CreateRun(ctx, model.CodexInspectionRun{
+		TriggerType: "manual", Status: model.CodexInspectionStatusCompleted, StartedAtMS: 1, Settings: model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	for _, name := range []string{"a.json", "b.json", "c.json"} {
+		if _, err := repository.InsertResult(ctx, model.CodexInspectionResult{
+			RunID: run.ID, AccountKey: name + "::-::x", FileName: name, DisplayAccount: name, Provider: "codex", Action: "keep",
+		}); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+	}
+	visible := func() string {
+		items, err := repository.ListResults(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		names := ""
+		for _, item := range items {
+			names += item.FileName + " "
+		}
+		return names
+	}
+
+	// A live list far longer than SQLite's bound-parameter limit still works: it is not bound per name.
+	live := []string{"a.json", "c.json"}
+	for i := 0; i < 40000; i++ {
+		live = append(live, "other-"+strconv.Itoa(i)+".json")
+	}
+	if n, err := repository.SyncResultCredentialVisibility(ctx, live, 5); err != nil || n != 1 {
+		t.Fatalf("hide: changed %d, err %v; want exactly b.json hidden", n, err)
+	}
+	if got := visible(); got != "a.json c.json " {
+		t.Fatalf("visible after hide = %q", got)
+	}
+	if n, err := repository.SyncResultCredentialVisibility(ctx, live, 6); err != nil || n != 0 {
+		t.Fatalf("repeat: changed %d, err %v; want a no-op", n, err)
+	}
+	if n, err := repository.SyncResultCredentialVisibility(ctx, append(live, "b.json"), 7); err != nil || n != 1 {
+		t.Fatalf("restore: changed %d, err %v", n, err)
+	}
+	if got := visible(); got != "a.json b.json c.json " {
+		t.Fatalf("visible after restore = %q", got)
 	}
 }

@@ -60,6 +60,8 @@ type Repository interface {
 	// History (snapshots, closed cycles) is kept; a later observation of the same
 	// account reactivates its windows. It returns how many windows were closed.
 	DeactivateAccounts(ctx context.Context, accountKeys []string, nowMS int64) (int64, error)
+	// ActiveAccountKeys lists the account keys that still have a current window.
+	ActiveAccountKeys(ctx context.Context) ([]string, error)
 }
 
 type repository struct {

@@ -43,7 +43,7 @@ type Repository interface {
 	// that are no longer live and shows them again if the file returns. Rows are
 	// kept as run history; ListResults skips the hidden ones. It returns how many
 	// rows changed.
-	SyncResultCredentialVisibility(ctx context.Context, isLive func(fileName string) bool, nowMS int64) (int64, error)
+	SyncResultCredentialVisibility(ctx context.Context, liveFileNames []string, nowMS int64) (int64, error)
 	ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error)
 	ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error)
 	UpsertDisableOwnership(ctx context.Context, item model.CodexInspectionDisableOwnership) error
@@ -474,54 +474,45 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 	return results, rows.Err()
 }
 
-func (r *repository) SyncResultCredentialVisibility(ctx context.Context, isLive func(fileName string) bool, nowMS int64) (int64, error) {
-	rows, err := r.db.QueryContext(ctx, `select file_name,
-			max(credential_removed_at_ms is null), max(credential_removed_at_ms is not null)
-		from codex_inspection_results group by file_name`)
+func (r *repository) SyncResultCredentialVisibility(ctx context.Context, liveFileNames []string, nowMS int64) (int64, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	var hide, show []string
-	for rows.Next() {
-		var name string
-		var visible, hidden int
-		if err := rows.Scan(&name, &visible, &hidden); err != nil {
-			_ = rows.Close()
+	defer func() { _ = tx.Rollback() }()
+	// Two set-based statements over the live names in a temp table: no per-name scans.
+	if _, err := tx.ExecContext(ctx, `create temp table if not exists inventory_live_names (name text primary key) without rowid`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from temp.inventory_live_names`); err != nil {
+		return 0, err
+	}
+	for _, name := range liveFileNames {
+		if _, err := tx.ExecContext(ctx, `insert or ignore into temp.inventory_live_names (name) values (?)`, name); err != nil {
 			return 0, err
 		}
-		live := isLive(name)
-		if !live && visible == 1 {
-			hide = append(hide, name)
-		} else if live && hidden == 1 {
-			show = append(show, name)
-		}
 	}
-	if err := rows.Close(); err != nil {
+	hide, err := tx.ExecContext(ctx, `update codex_inspection_results set credential_removed_at_ms = ?
+		where credential_removed_at_ms is null
+			and file_name not in (select name from temp.inventory_live_names)`, nowMS)
+	if err != nil {
 		return 0, err
 	}
-	if err := rows.Err(); err != nil {
+	show, err := tx.ExecContext(ctx, `update codex_inspection_results set credential_removed_at_ms = null
+		where credential_removed_at_ms is not null
+			and file_name in (select name from temp.inventory_live_names)`)
+	if err != nil {
 		return 0, err
 	}
-	var changed int64
-	for _, name := range hide {
-		res, err := r.db.ExecContext(ctx, `update codex_inspection_results set credential_removed_at_ms = ?
-			where file_name = ? and credential_removed_at_ms is null`, nowMS, name)
-		if err != nil {
-			return changed, err
-		}
-		n, _ := res.RowsAffected()
-		changed += n
+	if _, err := tx.ExecContext(ctx, `drop table temp.inventory_live_names`); err != nil {
+		return 0, err
 	}
-	for _, name := range show {
-		res, err := r.db.ExecContext(ctx, `update codex_inspection_results set credential_removed_at_ms = null
-			where file_name = ? and credential_removed_at_ms is not null`, name)
-		if err != nil {
-			return changed, err
-		}
-		n, _ := res.RowsAffected()
-		changed += n
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
-	return changed, nil
+	hidden, _ := hide.RowsAffected()
+	shown, _ := show.RowsAffected()
+	return hidden + shown, nil
 }
 
 func (r *repository) ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error) {

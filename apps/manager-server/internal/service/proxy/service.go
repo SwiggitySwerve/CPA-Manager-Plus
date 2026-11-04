@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -32,7 +33,7 @@ type Service struct {
 	providerUpstreams    map[string]string
 	oauth                oauthSessions
 	owners               upstreamOwners
-	onAuthFilesChanged   func(context.Context) // runs after a proxied auth-file mutation succeeded upstream
+	onAuthFilesChanged   func(context.Context, cpaauthfiles.MutationNotice) // runs after a proxied auth-file mutation succeeded upstream
 }
 
 type authFileOwnershipMutation struct {
@@ -238,6 +239,7 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		writeError(w, http.StatusRequestTimeout, err)
 		return
 	}
+	releaseAuthFileMutation = sync.OnceFunc(releaseAuthFileMutation)
 	defer releaseAuthFileMutation()
 	ownershipMutation, err = s.prepareAuthFileMutation(r.Context(), setup, r, ownershipMutation)
 	if err != nil {
@@ -287,6 +289,7 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 	}
 	responseProcessed := false
 	authFilesMutated := false
+	var notice cpaauthfiles.MutationNotice
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
 		if !responseProcessed {
 			if restoreErr := s.restoreInspectionOwnershipDetached(r.Context(), revokedOwnership); restoreErr != nil {
@@ -302,6 +305,12 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		}
 		authFilesMutated = isAuthFilesMutationRequest(r)
 		mutation, err := successfulAuthFileOwnershipMutation(response, ownershipMutation)
+		if authFilesMutated && r.Method == http.MethodDelete {
+			notice = cpaauthfiles.MutationNotice{Upstream: setup.CPAUpstreamURL, DeletedAll: ownershipMutation.clearAll && err == nil}
+			if err == nil {
+				notice.Deleted = mutation.fileNames
+			}
+		}
 		if err != nil {
 			// The upstream request may already have succeeded. Keep ownership revoked
 			// when a 2xx response cannot be interpreted, otherwise a later automatic
@@ -312,13 +321,15 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 	}
 	proxy.ServeHTTP(w, r)
 	if authFilesMutated && s.onAuthFilesChanged != nil {
-		// The upstream accepted the change; reconcile now instead of at the next poll.
-		s.onAuthFilesChanged(context.WithoutCancel(r.Context()))
+		// The upstream accepted the change; reconcile now instead of at the next poll,
+		// after the mutation lock is released so the hook never holds up other mutations.
+		releaseAuthFileMutation()
+		s.onAuthFilesChanged(context.WithoutCancel(r.Context()), notice)
 	}
 }
 
 // WithAuthFilesChangeHook registers fn to run after a proxied auth-file mutation succeeded upstream.
-func (s *Service) WithAuthFilesChangeHook(fn func(context.Context)) *Service {
+func (s *Service) WithAuthFilesChangeHook(fn func(context.Context, cpaauthfiles.MutationNotice)) *Service {
 	s.onAuthFilesChanged = fn
 	return s
 }

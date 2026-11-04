@@ -415,3 +415,32 @@ func TestSQLAccountKeyExpressionWithoutProjectMatchesGoForDailyIdentity(t *testi
 		})
 	}
 }
+
+func TestAuthFileOfKeyReadsOnlyFileBasedKeys(t *testing.T) {
+	for name, fields := range map[string]Fields{
+		"file-index":   {AuthFileSnapshot: "claude-b.json", AuthIndex: "7", AuthProviderSnapshot: "claude"},
+		"file":         {AuthFileSnapshot: "claude-b.json", AuthProviderSnapshot: "claude"},
+		"codex file":   {AuthFileSnapshot: "codex-a.json", AuthIndex: "1", AuthProviderSnapshot: "codex"},
+		"file-account": {AuthFileSnapshot: "claude-b.json", AccountSnapshot: "a@b.c", AuthProviderSnapshot: "claude"},
+	} {
+		key, ok := AccountKey(fields)
+		if !ok {
+			t.Fatalf("%s: no key", name)
+		}
+		if got, ok := AuthFileOfKey(key); !ok || got != fields.AuthFileSnapshot {
+			t.Errorf("%s: AuthFileOfKey(%q) = %q, %v; want %q", name, key, got, ok, fields.AuthFileSnapshot)
+		}
+	}
+	for name, fields := range map[string]Fields{
+		"index only": {AuthIndex: "7", AuthProviderSnapshot: "claude"},
+		"account":    {AccountSnapshot: "a@b.c", AuthProviderSnapshot: "claude"},
+	} {
+		key, _ := AccountKey(fields)
+		if got, ok := AuthFileOfKey(key); ok {
+			t.Errorf("%s: AuthFileOfKey(%q) = %q, want no file", name, key, got)
+		}
+	}
+	if _, ok := AuthFileOfKey("not-a-key"); ok {
+		t.Errorf("garbage accepted")
+	}
+}
