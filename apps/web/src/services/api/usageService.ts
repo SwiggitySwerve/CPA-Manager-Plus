@@ -211,6 +211,12 @@ export interface QuotaCooldownsResponse {
   items: QuotaCooldownInfo[];
 }
 
+export interface CredentialInventorySnapshot {
+  version: string;
+  syncedAtMs: number;
+  count: number;
+}
+
 export interface QuotaCooldownRecoveryRequest {
   authFileName: string;
   authIndex: string;
@@ -3158,6 +3164,26 @@ export const usageServiceApi = {
         }
       );
       return response.data.items ?? [];
+    });
+  },
+
+  getCredentialInventory: async (
+    base: string,
+    managementKey?: string
+  ): Promise<CredentialInventorySnapshot> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { version: 'demo', syncedAtMs: 0, count: 0 };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<CredentialInventorySnapshot>(
+        buildUrl(base, '/usage-service/inventory'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
     });
   },
 

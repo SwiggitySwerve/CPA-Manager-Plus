@@ -69,6 +69,7 @@ import {
 } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
+import { useInventoryRevalidation } from '@/hooks/useInventoryRevalidation';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -2426,6 +2427,12 @@ export function AccountsPage() {
   ]);
 
   useHeaderRefresh(refreshActiveWorkspace);
+  useInventoryRevalidation({
+    managerBase: featureAvailability.managerServiceBase ?? '',
+    managementKey,
+    enabled: !featureAvailability.checking,
+    onChange: refreshActiveWorkspace,
+  });
 
   useEffect(() => {
     void loadFiles();

@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
     reason: '',
   },
   getManagerConfig: vi.fn(),
+  getInventory: vi.fn(),
   listRuns: vi.fn(),
   getRun: vi.fn(),
   runInspection: vi.fn(),
@@ -100,6 +101,7 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
     usageServiceApi: {
       ...actual.usageServiceApi,
       getManagerConfig: mocks.getManagerConfig,
+      getCredentialInventory: mocks.getInventory,
       listCodexInspectionRuns: mocks.listRuns,
       getCodexInspectionRun: mocks.getRun,
       runCodexInspection: mocks.runInspection,
@@ -281,6 +283,7 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     });
     mocks.getManagerConfig.mockResolvedValue({ config: managerConfig, source: 'db' });
     mocks.getHeaderSnapshots.mockResolvedValue({ items: [] });
+    mocks.getInventory.mockResolvedValue({ version: 'inventory-1', syncedAtMs: 1, count: 2 });
     mocks.executeActions.mockReset();
     mocks.showConfirmation.mockImplementation((options: { onConfirm: () => void }) => {
       options.onConfirm();
@@ -762,6 +765,49 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     expect(restoredStopButton?.props.disabled).toBe(false);
 
     act(() => renderer!.unmount());
+  });
+
+  it('reloads the run results when the credential inventory version changes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const completed = run({ id: 9, status: 'completed', active: false, cancellable: false });
+      mocks.listRuns.mockResolvedValue({ items: [completed] });
+      mocks.getRun.mockResolvedValue(detail(completed));
+
+      let renderer: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(
+          <MemoryRouter>
+            <ServerCodexInspectionPage />
+          </MemoryRouter>
+        );
+        await flush();
+      });
+      expect(mocks.getInventory).toHaveBeenCalledWith('http://manager.local', 'management-key');
+
+      // Same version: the screen is left alone.
+      const listCallsAtBaseline = mocks.listRuns.mock.calls.length;
+      const detailCallsAtBaseline = mocks.getRun.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+        await flush();
+      });
+      expect(mocks.listRuns.mock.calls.length).toBe(listCallsAtBaseline);
+
+      // A credential was added or removed elsewhere: the visible run is reloaded in place.
+      mocks.getInventory.mockResolvedValue({ version: 'inventory-2', syncedAtMs: 2, count: 1 });
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+        await flush();
+        await flush();
+      });
+      expect(mocks.listRuns.mock.calls.length).toBeGreaterThan(listCallsAtBaseline);
+      expect(mocks.getRun.mock.calls.length).toBeGreaterThan(detailCallsAtBaseline);
+
+      act(() => renderer!.unmount());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not let a pre-cancel list response re-enable the stop action', async () => {
