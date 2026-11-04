@@ -31,6 +31,7 @@ type fakeUpstream struct {
 	files      []map[string]any
 	mode       string // "", "fail" (HTTP 500), "nolist" (200 {}), "garbage" (200, truncated JSON)
 	deleteFail bool
+	listings   int // successful or failed GETs of the list
 }
 
 func newFakeUpstream(t *testing.T, files ...map[string]any) *fakeUpstream {
@@ -47,6 +48,7 @@ func newFakeUpstream(t *testing.T, files ...map[string]any) *fakeUpstream {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v0/management/auth-files":
+			f.listings++
 			switch f.mode {
 			case "fail":
 				http.Error(w, "boom", http.StatusInternalServerError)
@@ -83,6 +85,12 @@ func (f *fakeUpstream) set(files ...map[string]any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.files = files
+}
+
+func (f *fakeUpstream) listingCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listings
 }
 
 func (f *fakeUpstream) setMode(mode string) {
@@ -654,5 +662,36 @@ func TestVersionIgnoresOrderAndTracksMembershipAndDisabled(t *testing.T) {
 	}
 	if len(versionOf(a)) != 16 {
 		t.Errorf("version %q is not 16 hex characters", versionOf(a))
+	}
+}
+
+func TestFreshListsOnlyWhenTheLastAttemptIsOlderThanMaxAge(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	first := h.svc.Fresh(ctx, 2*time.Second)
+	if first.Count != 4 || first.Version == "" || h.primary.listingCount() != 1 {
+		t.Fatalf("first Fresh = %#v after %d listings, want 4 credentials from one listing", first, h.primary.listingCount())
+	}
+
+	h.primary.set(codexA)
+	h.nowMS += 1_000
+	if got := h.svc.Fresh(ctx, 2*time.Second); got != first || h.primary.listingCount() != 1 {
+		t.Fatalf("Fresh within maxAge = %#v after %d listings, want the cached snapshot", got, h.primary.listingCount())
+	}
+
+	h.nowMS += 2_000
+	got := h.svc.Fresh(ctx, 2*time.Second)
+	if got.Count != 3 || got.Version == first.Version || h.primary.listingCount() != 2 {
+		t.Fatalf("Fresh after maxAge = %#v after %d listings, want a new listing with 3 credentials", got, h.primary.listingCount())
+	}
+
+	// A failing upstream is not hammered: one attempt per maxAge, and the snapshot is kept.
+	h.primary.setMode("fail")
+	h.nowMS += 3_000
+	failed := h.svc.Fresh(ctx, 2*time.Second)
+	h.svc.Fresh(ctx, 2*time.Second)
+	if failed != got || h.primary.listingCount() != 3 {
+		t.Fatalf("Fresh against a failing upstream = %#v after %d listings, want the kept snapshot from a single attempt", failed, h.primary.listingCount())
 	}
 }

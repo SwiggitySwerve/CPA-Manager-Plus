@@ -88,6 +88,7 @@ type Service struct {
 	primed      bool
 	version     string
 	syncedAt    time.Time
+	lastAttempt time.Time
 	count       int
 	files       map[string]cpaauthfiles.File // "upstream\x00name" -> file, from the last applied listing
 	names       map[string]struct{}          // live names and runtime ids
@@ -165,6 +166,19 @@ func (s *Service) Snapshot() Snapshot {
 	return snap
 }
 
+// Fresh returns the last applied inventory, listing the upstreams first when no
+// pass has been attempted within maxAge. A failing upstream is retried at most
+// once per maxAge however many callers ask.
+func (s *Service) Fresh(ctx context.Context, maxAge time.Duration) Snapshot {
+	s.mu.Lock()
+	stale := s.lastAttempt.IsZero() || s.now().Sub(s.lastAttempt) > maxAge
+	s.mu.Unlock()
+	if stale {
+		s.poll(ctx)
+	}
+	return s.Snapshot()
+}
+
 // Notify is for callers that just mutated auth files through this manager. It
 // reconciles immediately and does not wait for the next poll.
 func (s *Service) Notify(ctx context.Context) {
@@ -180,6 +194,7 @@ func (s *Service) Notify(ctx context.Context) {
 func (s *Service) Refresh(ctx context.Context, reason string) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastAttempt = s.now()
 
 	setup, ok, err := s.setups.ResolveSetup(ctx)
 	if err != nil {
