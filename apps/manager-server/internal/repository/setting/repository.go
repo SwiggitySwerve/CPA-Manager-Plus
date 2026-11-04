@@ -16,6 +16,7 @@ const managerConfigKey = "manager_config_v1"
 const automationSettingsKey = "automation_settings_v1"
 const adminCredentialKey = "admin_credential_v1"
 const bootstrapStateKey = "bootstrap_state_v1"
+const knownAuthFilesKey = "inventory_known_auth_files_v1"
 
 type Repository interface {
 	SaveManagerConfig(ctx context.Context, cfg model.ManagerConfig) error
@@ -31,6 +32,10 @@ type Repository interface {
 	SaveBootstrapState(ctx context.Context, state model.BootstrapState) error
 	LoadBootstrapState(ctx context.Context) (model.BootstrapState, bool, error)
 	HasHistoricalData(ctx context.Context) (bool, error)
+	// SaveKnownAuthFiles and LoadKnownAuthFiles keep the auth file names the inventory
+	// watcher last applied, so a restart still knows which names were real auth files.
+	SaveKnownAuthFiles(ctx context.Context, names []string) error
+	LoadKnownAuthFiles(ctx context.Context) ([]string, error)
 }
 
 type repository struct {
@@ -169,6 +174,30 @@ func (r *repository) LoadSetup(ctx context.Context) (model.Setup, bool, error) {
 		return model.Setup{}, false, err
 	}
 	return setup, true, nil
+}
+
+func (r *repository) SaveKnownAuthFiles(ctx context.Context, names []string) error {
+	data, err := json.Marshal(names)
+	if err != nil {
+		return err
+	}
+	return upsertSetting(ctx, r.db, knownAuthFilesKey, data, time.Now().UnixMilli())
+}
+
+func (r *repository) LoadKnownAuthFiles(ctx context.Context) ([]string, error) {
+	var raw string
+	err := r.db.QueryRowContext(ctx, `select value from settings where key = ?`, knownAuthFilesKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 func (r *repository) SaveManagerConfig(ctx context.Context, cfg model.ManagerConfig) error {

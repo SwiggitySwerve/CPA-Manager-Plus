@@ -42,9 +42,12 @@ const (
 	// slow write is not cut short by (or charged to) the listing budget.
 	reconcileTimeout = 2 * time.Minute
 	// absentConfirmations is how many consecutive complete listings must lack a
-	// name before it counts as removed. An unmounted auth directory or a partial
-	// answer looks like missing names; one listing is not proof.
+	// name before it counts as removed. A partial answer looks like missing names;
+	// one listing is not proof.
 	absentConfirmations = 2
+	// emptyConfirmations is the same for names of an upstream that now lists
+	// nothing at all, which is what an unmounted or wiped auth directory looks like.
+	emptyConfirmations = 3
 
 	ReasonPoll     = "poll"
 	ReasonMutation = "mutation"
@@ -95,6 +98,13 @@ type Service struct {
 	files   map[string]cpaauthfiles.File // "upstream\x00name" -> file, from the last applied listing (plus names still pending removal)
 	names   map[string]struct{}          // applied live names and runtime ids, including names pending removal
 	missing map[string]int               // name -> consecutive complete listings it was absent from
+	// emptyStreak counts consecutive complete listings in which an upstream listed nothing.
+	emptyStreak map[string]int
+	// known are the auth file names the last process applied; only quota keys naming one of
+	// them are swept, because a file-kind key can embed a usage source string instead of a file.
+	known      map[string]struct{}
+	knownSaved string
+	epoch      int // bumped by every pass that reconciled, so the version reflects applied state
 
 	// snapMu guards what readers see, so a slow pass never blocks Snapshot.
 	snapMu      sync.Mutex
@@ -113,11 +123,12 @@ func New(st *store.Store, setups SetupResolver, extraUpstreams []string) *Servic
 // NewWithLister is New with an explicit lister.
 func NewWithLister(st *store.Store, setups SetupResolver, lister Lister, extraUpstreams []string) *Service {
 	s := &Service{
-		setups:  setups,
-		lister:  lister,
-		store:   st,
-		now:     time.Now,
-		missing: map[string]int{},
+		setups:      setups,
+		lister:      lister,
+		store:       st,
+		now:         time.Now,
+		missing:     map[string]int{},
+		emptyStreak: map[string]int{},
 	}
 	for _, raw := range extraUpstreams {
 		if base := cpa.NormalizeBaseURL(raw); base != "" {
@@ -225,39 +236,50 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 	if !ok {
 		return Result{}, nil
 	}
+	bases := s.bases(setup.CPAUpstreamURL)
 	next := make(map[string]cpaauthfiles.File)
-	for _, base := range s.bases(setup.CPAUpstreamURL) {
+	perBase := make(map[string]int, len(bases))
+	for _, base := range bases {
 		files, err := s.lister.FetchInventory(listCtx, base, setup.ManagementKey)
 		if err != nil {
 			return Result{Version: prevVersion}, fmt.Errorf("list %s: %w", base, err)
 		}
+		perBase[base] = len(files)
 		for _, file := range files {
 			next[fileKey(base, file.Name)] = file
 		}
 	}
-	version := versionOf(next)
 	listed := namesOf(next)
 	listedCount := len(next)
-	result := Result{Version: version, Changed: !s.primed || version != prevVersion}
+	for _, base := range bases {
+		if perBase[base] == 0 {
+			s.emptyStreak[base]++
+		} else {
+			delete(s.emptyStreak, base)
+		}
+	}
 
 	if !s.primed {
 		// First complete listing of this process: only observe. Rows left from
-		// before the process started are swept on the next pass, once a second
+		// before the process started are swept on a later pass, once a second
 		// listing agrees.
 		s.primed = true
+		s.loadKnown(ctx)
 		s.files, s.names = next, listed
+		version := versionOf(next, s.epoch)
 		s.publish(version, listedCount)
-		return result, nil
+		return Result{Version: version, Changed: true}, nil
 	}
 
 	// Names applied as live that this listing lacks, and for how many listings in a row.
+	result := Result{}
 	nextMissing := map[string]int{}
 	confirmed := map[string]struct{}{}
 	for name := range s.names {
 		if _, ok := listed[name]; ok {
 			continue
 		}
-		if s.deletedByMutation(name, notice) || s.missing[name]+1 >= absentConfirmations {
+		if s.deletedByMutation(name, notice) || s.missing[name]+1 >= s.requiredAbsences(name) {
 			confirmed[name] = struct{}{}
 			continue
 		}
@@ -280,7 +302,16 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 	sort.Strings(result.Removed)
 	result.Held = len(nextMissing) > 0
 
-	if !s.swept || len(confirmed) > 0 || len(result.Added) > 0 {
+	// The sweep of rows from before this process cannot tell "removed" from "not mounted
+	// yet", so it waits while an upstream lists nothing, until that has persisted.
+	sweepReady := true
+	for _, base := range bases {
+		if n := s.emptyStreak[base]; n > 0 && n < emptyConfirmations {
+			sweepReady = false
+		}
+	}
+	reconciled := false
+	if (s.swept || sweepReady) && (!s.swept || len(confirmed) > 0 || len(result.Added) > 0) {
 		quotaKeys, err := s.quotaKeysToDeactivate(ctx, next, confirmed, effective)
 		if err != nil {
 			return result, fmt.Errorf("reconcile: %w", err)
@@ -293,7 +324,7 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 			// State is not advanced, so the next pass retries.
 			return result, fmt.Errorf("reconcile: %w", err)
 		}
-		s.swept = true
+		s.swept, reconciled = true, true
 	}
 
 	// Keep the files of names still pending removal so their quota keys survive until confirmed.
@@ -302,9 +333,61 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 			next[key] = file
 		}
 	}
+	if reconciled {
+		s.epoch++
+	}
 	s.files, s.names, s.missing = next, effective, nextMissing
-	s.publish(version, listedCount)
+	s.saveKnown(ctx, effective)
+	// The version reflects what has been applied, not the raw listing: it moves on the
+	// pass that reconciled, so a panel that refetches on it sees the cleaned rows.
+	result.Version = versionOf(next, s.epoch)
+	result.Changed = result.Version != prevVersion
+	s.publish(result.Version, listedCount)
 	return result, nil
+}
+
+// requiredAbsences is how many consecutive listings must lack name: more when the
+// upstream that held it now lists nothing.
+func (s *Service) requiredAbsences(name string) int {
+	for key, file := range s.files {
+		if file.Name != name && file.ID != name {
+			continue
+		}
+		base, _, _ := strings.Cut(key, "\x00")
+		if s.emptyStreak[base] > 0 {
+			return emptyConfirmations
+		}
+	}
+	return absentConfirmations
+}
+
+func (s *Service) loadKnown(ctx context.Context) {
+	names, err := s.store.Settings.LoadKnownAuthFiles(ctx)
+	if err != nil {
+		log.Printf("inventory: load known auth files: %v", err)
+	}
+	s.known = make(map[string]struct{}, len(names))
+	for _, name := range names {
+		s.known[name] = struct{}{}
+	}
+}
+
+// saveKnown records the applied names (best effort) so the next process knows which names were auth files.
+func (s *Service) saveKnown(ctx context.Context, names map[string]struct{}) {
+	list := make([]string, 0, len(names))
+	for name := range names {
+		list = append(list, name)
+	}
+	sort.Strings(list)
+	joined := strings.Join(list, "\x00")
+	if joined == s.knownSaved {
+		return
+	}
+	if err := s.store.Settings.SaveKnownAuthFiles(context.WithoutCancel(ctx), list); err != nil {
+		log.Printf("inventory: save known auth files: %v", err)
+		return
+	}
+	s.knownSaved = joined
 }
 
 func (s *Service) publish(version string, count int) {
@@ -347,15 +430,16 @@ func (s *Service) bases(primary string) []string {
 
 func fileKey(base, name string) string { return base + "\x00" + name }
 
-// versionOf hashes the sorted (upstream, name, disabled) of every listed file.
-// It carries no account data other than file names.
-func versionOf(files map[string]cpaauthfiles.File) string {
+// versionOf hashes the sorted (upstream, name, disabled) of every applied file and
+// the count of reconciling passes. It carries no account data other than file names.
+func versionOf(files map[string]cpaauthfiles.File, epoch int) string {
 	lines := make([]string, 0, len(files))
 	for key, file := range files {
 		base, _, _ := strings.Cut(key, "\x00")
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%t", base, file.Name, file.Disabled))
 	}
 	sort.Strings(lines)
+	lines = append(lines, fmt.Sprintf("epoch\t%d", epoch))
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return hex.EncodeToString(sum[:])[:16]
 }
@@ -439,8 +523,9 @@ func (s *Service) reconcile(ctx context.Context, live map[string]struct{}, quota
 //   - for names confirmed removed in this process, the keys come from their
 //     last listed file;
 //   - on the first sweep, active window keys are read from the database, and a
-//     key counts only when it embeds an auth file name that is no longer live
-//     (file-based keys only; Codex member and workspace keys name no file).
+//     key counts only when it embeds the name of an auth file a previous process
+//     applied (s.known) that is no longer live (file-based keys only; Codex member
+//     and workspace keys name no file).
 //
 // A key that a still-listed credential also produces is never returned.
 func (s *Service) quotaKeysToDeactivate(
@@ -481,10 +566,17 @@ func (s *Service) quotaKeysToDeactivate(
 			return nil, fmt.Errorf("list active quota windows: %w", err)
 		}
 		for _, key := range active {
-			if name, ok := usageidentity.AuthFileOfKey(key); ok {
-				if _, stillLive := live[name]; !stillLive {
-					add(key)
-				}
+			name, ok := usageidentity.AuthFileOfKey(key)
+			if !ok {
+				continue
+			}
+			// A file-kind key embeds the usage "source" when no auth file snapshot was
+			// recorded, so only a name a previous listing really had is an auth file.
+			if _, wasAuthFile := s.known[name]; !wasAuthFile {
+				continue
+			}
+			if _, stillLive := live[name]; !stillLive {
+				add(key)
 			}
 		}
 	}

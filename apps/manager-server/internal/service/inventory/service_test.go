@@ -491,8 +491,8 @@ func TestFailedOrPartialListingChangesNothing(t *testing.T) {
 			t.Run(tc.name+" from "+which, func(t *testing.T) {
 				h := newHarness(t)
 				runID := h.seedMetadata()
-				first := h.refresh(ReasonPoll)
-				h.refresh(ReasonPoll)
+				h.settle()
+				first := h.svc.Snapshot()
 
 				// The other upstream really did lose a credential; the failure of this one must still hold everything back.
 				bad, other := h.extra, h.primary
@@ -543,28 +543,30 @@ func TestAnUpstreamTurningEmptyNeedsToRepeat(t *testing.T) {
 
 	// An unmounted auth directory looks like an empty list.
 	h.primary.set()
-	held := h.refresh(ReasonPoll)
-	if !held.Held || len(held.Removed) != 0 {
-		t.Fatalf("first empty poll = %#v, want it held", held)
+	for i := 1; i <= 2; i++ {
+		held := h.refresh(ReasonPoll)
+		if !held.Held || len(held.Removed) != 0 {
+			t.Fatalf("empty poll %d = %#v, want it held", i, held)
+		}
 	}
 	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending || !h.visibleResults(runID)["codex-a.json"] {
-		t.Fatalf("metadata changed on the first empty poll")
+		t.Fatalf("metadata changed before the empty listing persisted")
 	}
 
-	// It is back before the second poll: nothing was ever removed.
+	// It is back before the third poll: nothing was ever removed, and the count starts over.
 	h.primary.set(codexA, codexC)
 	if res := h.refresh(ReasonPoll); res.Held || len(res.Removed) != 0 {
 		t.Fatalf("recovered listing = %#v, want a clean pass", res)
 	}
-
-	// Empty twice in a row is a real removal.
 	h.primary.set()
-	if res := h.refresh(ReasonPoll); !res.Held {
-		t.Fatalf("empty poll after recovery = %#v, want held again", res)
+	for i := 1; i <= 2; i++ {
+		if res := h.refresh(ReasonPoll); !res.Held {
+			t.Fatalf("empty poll %d after recovery = %#v, want held again", i, res)
+		}
 	}
 	res := h.refresh(ReasonPoll)
 	if res.Held || strings.Join(res.Removed, ",") != "codex-a.json,codex-c.json" {
-		t.Fatalf("confirmed empty poll = %#v, want both codex credentials removed", res)
+		t.Fatalf("third empty poll = %#v, want both codex credentials removed", res)
 	}
 	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
 		t.Errorf("confirmed removal was not applied")
@@ -663,22 +665,25 @@ func TestVersionIgnoresOrderAndTracksMembershipAndDisabled(t *testing.T) {
 	}
 	a := map[string]cpaauthfiles.File{fileKey("u1", "a"): file("a", false), fileKey("u2", "b"): file("b", false)}
 	reordered := map[string]cpaauthfiles.File{fileKey("u2", "b"): file("b", false), fileKey("u1", "a"): file("a", false)}
-	if versionOf(a) != versionOf(reordered) {
+	if versionOf(a, 0) != versionOf(reordered, 0) {
 		t.Fatalf("version depends on map order")
 	}
 	disabled := map[string]cpaauthfiles.File{fileKey("u1", "a"): file("a", true), fileKey("u2", "b"): file("b", false)}
 	moved := map[string]cpaauthfiles.File{fileKey("u2", "a"): file("a", false), fileKey("u2", "b"): file("b", false)}
 	removed := map[string]cpaauthfiles.File{fileKey("u1", "a"): file("a", false)}
-	seen := map[string]string{versionOf(a): "base"}
+	seen := map[string]string{versionOf(a, 0): "base"}
 	for name, files := range map[string]map[string]cpaauthfiles.File{"disabled": disabled, "moved upstream": moved, "removed": removed} {
-		v := versionOf(files)
+		v := versionOf(files, 0)
 		if prev, dup := seen[v]; dup {
 			t.Errorf("%s has the same version as %s", name, prev)
 		}
 		seen[v] = name
 	}
-	if len(versionOf(a)) != 16 {
-		t.Errorf("version %q is not 16 hex characters", versionOf(a))
+	if versionOf(a, 0) == versionOf(a, 1) {
+		t.Errorf("version ignores the reconcile epoch")
+	}
+	if len(versionOf(a, 0)) != 16 {
+		t.Errorf("version %q is not 16 hex characters", versionOf(a, 0))
 	}
 }
 
@@ -750,6 +755,7 @@ func TestPartialListingDoesNotRemoveUntilAbsentOnTwoConsecutivePolls(t *testing.
 func TestRestartSweepsMetadataAndQuotaWindowsOfCredentialsRemovedWhileDown(t *testing.T) {
 	h := newHarness(t)
 	runID := h.seedMetadata()
+	h.settle()            // the previous process listed codex-a, so it knows it was an auth file
 	h.primary.set(codexC) // codex-a was deleted while the manager was down
 	h.restart()
 
@@ -780,5 +786,124 @@ func TestConcurrentFreshCallsListOnce(t *testing.T) {
 	wg.Wait()
 	if n := h.primary.listingCount(); n != 1 {
 		t.Fatalf("primary listed %d times for 8 concurrent Fresh calls, want 1", n)
+	}
+}
+
+func TestVersionMovesOnThePassThatAppliesTheRemoval(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle()
+	settled := h.svc.Snapshot().Version
+
+	h.primary.set(codexC) // codex-a removed out of band
+	h.refresh(ReasonPoll)
+	if got := h.svc.Snapshot().Version; got != settled {
+		t.Fatalf("version moved to %s on the first absent poll, before anything was reconciled", got)
+	}
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending {
+		t.Fatalf("precondition: nothing reconciled yet")
+	}
+
+	h.refresh(ReasonPoll)
+	applied := h.svc.Snapshot().Version
+	if applied == settled {
+		t.Fatalf("version did not move on the pass that reconciled; a panel that refetched on it would keep stale rows")
+	}
+	// What a panel refetch sees right after the version moved.
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("rows were not cleaned when the version moved")
+	}
+	h.refresh(ReasonPoll)
+	if got := h.svc.Snapshot().Version; got != applied {
+		t.Fatalf("version moved again (%s) with nothing left to apply", got)
+	}
+}
+
+func TestVersionMovesWhenTheRestartSweepRuns(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle()
+	h.primary.set(codexC)
+	h.restart()
+
+	h.refresh(ReasonPoll) // observe only
+	observed := h.svc.Snapshot().Version
+	h.refresh(ReasonPoll) // sweep
+	if got := h.svc.Snapshot().Version; got == observed {
+		t.Fatalf("version stayed %s across the sweep that cleaned rows", got)
+	}
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("sweep did not clean the row")
+	}
+}
+
+func TestAnEmptiedUpstreamNeedsThreeListingsAndAProxiedDeleteAllIsImmediate(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle()
+
+	h.primary.set()
+	for i := 1; i <= 2; i++ {
+		res := h.refresh(ReasonPoll)
+		if len(res.Removed) != 0 || h.candidateStatus("codex-a.json") != model.AccountActionStatusPending {
+			t.Fatalf("empty listing %d removed %v; an emptied upstream needs three", i, res.Removed)
+		}
+	}
+	res := h.refresh(ReasonPoll)
+	if strings.Join(res.Removed, ",") != "codex-a.json,codex-c.json" || h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("third empty listing = %#v, want both codex credentials removed", res)
+	}
+
+	// A delete-all through this manager is the evidence itself.
+	h2 := newHarness(t)
+	h2.seedMetadata()
+	h2.settle()
+	h2.primary.set()
+	h2.svc.Notify(context.Background(), cpaauthfiles.MutationNotice{Upstream: h2.primary.URL, DeletedAll: true})
+	if h2.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("proxied delete-all was not applied immediately")
+	}
+}
+
+func TestRestartSweepWaitsWhileAnUpstreamIsEmpty(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle()
+	h.primary.set() // unmounted auth dir during the restart
+	h.restart()
+	for i := 0; i < 2; i++ {
+		h.refresh(ReasonPoll)
+	}
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending {
+		t.Fatalf("sweep ran while the primary had listed nothing only twice")
+	}
+	h.refresh(ReasonPoll)
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("sweep never ran after the empty listing persisted")
+	}
+}
+
+func TestSweepIgnoresQuotaKeysThatEmbedASourceInsteadOfAnAuthFile(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	// A usage-event writer without an auth file snapshot: the key embeds the source string.
+	start, end, duration, used := h.nowMS-3_600_000, h.nowMS+3_600_000, int64(7200), 10.0
+	target := quotasnapshotsvc.AccountTarget{AuthProviderSnapshot: "claude", Source: "sk-ant-***masked"}
+	if _, err := h.quota.Write(context.Background(), quotasnapshotsvc.WriteRequest{Entries: []quotasnapshotsvc.WriteEntry{{
+		Provider: "claude", Account: target,
+		Windows: []quotasnapshotsvc.WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour", WindowMode: "fixed", ModelScopeKind: "all",
+			Source: "api_query", ObservedAtMS: h.nowMS - 1000, BoundaryAccuracy: "exact",
+			CycleStartMS: &start, CycleEndMS: &end, DurationSeconds: &duration, UsedPercent: &used,
+		}},
+	}}}); err != nil {
+		t.Fatalf("seed source-keyed window: %v", err)
+	}
+	h.settle()
+	h.settle()
+	res, err := h.quota.Query(context.Background(), quotasnapshotsvc.QueryRequest{NowMS: h.nowMS,
+		Accounts: []quotasnapshotsvc.QueryAccount{{RowKey: "r", Provider: "claude", Account: target}}})
+	if err != nil || len(res.Items) != 1 || len(res.Items[0].Windows) != 1 {
+		t.Fatalf("a window keyed by a source string was deactivated by the sweep: %+v, %v", res, err)
 	}
 }
