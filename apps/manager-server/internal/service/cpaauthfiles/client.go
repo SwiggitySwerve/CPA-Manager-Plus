@@ -926,6 +926,10 @@ func scanFilesListed(body io.Reader, visit func(File) (bool, error)) (bool, erro
 			if err != nil {
 				return false, err
 			}
+			if valueToken == nil {
+				scannedList = true // an explicit null list is an empty list, as the management proxy reads it
+				continue
+			}
 			valueDelimiter, ok := valueToken.(json.Delim)
 			if !ok || valueDelimiter != '[' {
 				value, err := decodeValueAfterToken(decoder, valueToken)
