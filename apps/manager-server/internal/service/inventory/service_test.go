@@ -147,6 +147,7 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) refresh(reason string) Result {
 	h.t.Helper()
+	h.nowMS += 10_000 // spaced past the minimum absence age, so listing count is what a test exercises
 	res, err := h.svc.Refresh(context.Background(), reason)
 	if err != nil {
 		h.t.Fatalf("Refresh(%s): %v", reason, err)
@@ -905,5 +906,74 @@ func TestSweepIgnoresQuotaKeysThatEmbedASourceInsteadOfAnAuthFile(t *testing.T) 
 		Accounts: []quotasnapshotsvc.QueryAccount{{RowKey: "r", Provider: "claude", Account: target}}})
 	if err != nil || len(res.Items) != 1 || len(res.Items[0].Windows) != 1 {
 		t.Fatalf("a window keyed by a source string was deactivated by the sweep: %+v, %v", res, err)
+	}
+}
+
+func TestRestartBeforeTheSweepKeepsTheNamesRemovedWhileDown(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle() // persists the applied names, codex-a included
+
+	h.primary.set() // unmounted during the restart, so the sweep cannot run yet
+	h.restart()
+	h.refresh(ReasonPoll)
+	h.refresh(ReasonPoll)
+
+	known, err := h.st.Settings.LoadKnownAuthFiles(context.Background())
+	if err != nil {
+		t.Fatalf("load known: %v", err)
+	}
+	if !strings.Contains(strings.Join(known, ","), "codex-a.json") {
+		t.Fatalf("known names after a restart that never swept = %v; codex-a.json was forgotten", known)
+	}
+}
+
+func TestAbsenceNeedsMinimumElapsedTimeNotJustListingCount(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle()
+	ctx := context.Background()
+
+	// Panel and notify passes can list many times within seconds.
+	h.primary.set(codexC)
+	for i := 0; i < 5; i++ {
+		if _, err := h.svc.Refresh(ctx, ReasonPoll); err != nil { // no clock advance
+			t.Fatal(err)
+		}
+	}
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending {
+		t.Fatalf("five listings within one instant confirmed a removal")
+	}
+	h.nowMS += 9_000
+	h.svc.Refresh(ctx, ReasonPoll)
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending {
+		t.Fatalf("removal confirmed 9 s after the first absence, want 10 s")
+	}
+	h.nowMS += 1_000
+	h.svc.Refresh(ctx, ReasonPoll)
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("removal not confirmed 10 s after the first absence")
+	}
+}
+
+func TestEmptiedUpstreamNeedsFifteenSeconds(t *testing.T) {
+	h := newHarness(t)
+	h.seedMetadata()
+	h.settle()
+	ctx := context.Background()
+
+	h.primary.set()
+	for i := 0; i < 4; i++ {
+		h.svc.Refresh(ctx, ReasonPoll)
+	}
+	h.nowMS += 14_000
+	h.svc.Refresh(ctx, ReasonPoll)
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusPending {
+		t.Fatalf("emptied upstream confirmed after 14 s, want 15 s")
+	}
+	h.nowMS += 1_000
+	h.svc.Refresh(ctx, ReasonPoll)
+	if h.candidateStatus("codex-a.json") != model.AccountActionStatusDeleted {
+		t.Fatalf("emptied upstream not confirmed after 15 s")
 	}
 }

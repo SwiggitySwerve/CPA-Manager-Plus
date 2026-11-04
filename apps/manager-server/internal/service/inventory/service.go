@@ -48,6 +48,10 @@ const (
 	// emptyConfirmations is the same for names of an upstream that now lists
 	// nothing at all, which is what an unmounted or wiped auth directory looks like.
 	emptyConfirmations = 3
+	// Listings alone are not time: panel polls and notifications also list, so a few
+	// can pass within seconds. A name must also have been absent for this long.
+	absentMinAge = 10 * time.Second
+	emptyMinAge  = 15 * time.Second
 
 	ReasonPoll     = "poll"
 	ReasonMutation = "mutation"
@@ -98,6 +102,8 @@ type Service struct {
 	files   map[string]cpaauthfiles.File // "upstream\x00name" -> file, from the last applied listing (plus names still pending removal)
 	names   map[string]struct{}          // applied live names and runtime ids, including names pending removal
 	missing map[string]int               // name -> consecutive complete listings it was absent from
+	// firstAbsent is when each pending name was first missing from a complete listing.
+	firstAbsent map[string]time.Time
 	// emptyStreak counts consecutive complete listings in which an upstream listed nothing.
 	emptyStreak map[string]int
 	// known are the auth file names the last process applied; only quota keys naming one of
@@ -128,6 +134,7 @@ func NewWithLister(st *store.Store, setups SetupResolver, lister Lister, extraUp
 		store:       st,
 		now:         time.Now,
 		missing:     map[string]int{},
+		firstAbsent: map[string]time.Time{},
 		emptyStreak: map[string]int{},
 	}
 	for _, raw := range extraUpstreams {
@@ -274,16 +281,24 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 	// Names applied as live that this listing lacks, and for how many listings in a row.
 	result := Result{}
 	nextMissing := map[string]int{}
+	nextFirst := map[string]time.Time{}
+	now := s.now()
 	confirmed := map[string]struct{}{}
 	for name := range s.names {
 		if _, ok := listed[name]; ok {
 			continue
 		}
-		if s.deletedByMutation(name, notice) || s.missing[name]+1 >= s.requiredAbsences(name) {
+		first, seen := s.firstAbsent[name]
+		if !seen {
+			first = now
+		}
+		count, minAge := s.requiredAbsences(name)
+		if s.deletedByMutation(name, notice) || (s.missing[name]+1 >= count && now.Sub(first) >= minAge) {
 			confirmed[name] = struct{}{}
 			continue
 		}
 		nextMissing[name] = s.missing[name] + 1
+		nextFirst[name] = first
 	}
 	effective := make(map[string]struct{}, len(listed)+len(nextMissing))
 	for name := range listed {
@@ -336,8 +351,20 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 	if reconciled {
 		s.epoch++
 	}
-	s.files, s.names, s.missing = next, effective, nextMissing
-	s.saveKnown(ctx, effective)
+	s.files, s.names, s.missing, s.firstAbsent = next, effective, nextMissing, nextFirst
+	saved := effective
+	if !s.swept {
+		// Until the sweep has run, keep the names a previous process knew, so a restart
+		// before the sweep does not forget the credentials removed while it was down.
+		saved = make(map[string]struct{}, len(effective)+len(s.known))
+		for name := range s.known {
+			saved[name] = struct{}{}
+		}
+		for name := range effective {
+			saved[name] = struct{}{}
+		}
+	}
+	s.saveKnown(ctx, saved)
 	// The version reflects what has been applied, not the raw listing: it moves on the
 	// pass that reconciled, so a panel that refetches on it sees the cleaned rows.
 	result.Version = versionOf(next, s.epoch)
@@ -346,19 +373,19 @@ func (s *Service) refreshLocked(ctx context.Context, reason string, notice cpaau
 	return result, nil
 }
 
-// requiredAbsences is how many consecutive listings must lack name: more when the
-// upstream that held it now lists nothing.
-func (s *Service) requiredAbsences(name string) int {
+// requiredAbsences is how many consecutive listings, and how long, must lack name:
+// more when the upstream that held it now lists nothing.
+func (s *Service) requiredAbsences(name string) (int, time.Duration) {
 	for key, file := range s.files {
 		if file.Name != name && file.ID != name {
 			continue
 		}
 		base, _, _ := strings.Cut(key, "\x00")
 		if s.emptyStreak[base] > 0 {
-			return emptyConfirmations
+			return emptyConfirmations, emptyMinAge
 		}
 	}
-	return absentConfirmations
+	return absentConfirmations, absentMinAge
 }
 
 func (s *Service) loadKnown(ctx context.Context) {
