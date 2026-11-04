@@ -11,6 +11,7 @@ import (
 	codexinspectioncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/codexinspection"
 	dashboardcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/dashboard"
 	healthcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/health"
+	inventorycontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/inventory"
 	managerconfigcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/managerconfig"
 	modelpricecontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/modelprice"
 	monitoringcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/monitoring"
@@ -37,6 +38,7 @@ func New(appCtx *app.Context) http.Handler {
 	accountActionHandler := &accountactioncontroller.Handler{App: appCtx}
 	automationHandler := automationcontroller.New(appCtx)
 	quotaCooldownHandler := &quotacooldowncontroller.Handler{App: appCtx}
+	inventoryHandler := &inventorycontroller.Handler{App: appCtx}
 	codexInspectionHandler := &codexinspectioncontroller.Handler{App: appCtx}
 	dashboardHandler := &dashboardcontroller.Handler{App: appCtx}
 	monitoringHandler := &monitoringcontroller.Handler{App: appCtx}
@@ -55,6 +57,7 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/usage-service/account-processing-policy", middleware.WithCORS(appCtx.Config, automationHandler.Handle))
 	mux.HandleFunc("/usage-service/quota-cooldowns", middleware.WithCORS(appCtx.Config, quotaCooldownHandler.Handle))
 	mux.HandleFunc("/usage-service/quota-cooldowns/", middleware.WithCORS(appCtx.Config, quotaCooldownHandler.Handle))
+	mux.HandleFunc("/usage-service/inventory", middleware.WithCORS(appCtx.Config, inventoryHandler.Handle))
 	mux.HandleFunc("/setup", middleware.WithCORS(appCtx.Config, setupHandler.Setup))
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
 	mux.HandleFunc("/favicon.ico", panelHandler.Favicon)

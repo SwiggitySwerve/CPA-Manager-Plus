@@ -1767,6 +1767,77 @@ func reconcileAbsentWindows(
 	return nil
 }
 
+func (r *repository) ActiveAccountKeys(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `select distinct account_key from account_quota_windows where availability <> 'inactive'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+func (r *repository) DeactivateAccounts(ctx context.Context, accountKeys []string, nowMS int64) (int64, error) {
+	if len(accountKeys) == 0 {
+		return 0, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var closed int64
+	for _, accountKey := range accountKeys {
+		rows, err := tx.QueryContext(ctx, `select
+			id, provider, availability, missing_since_ms
+			from account_quota_windows where account_key = ? and availability <> 'inactive'`, accountKey)
+		if err != nil {
+			return 0, err
+		}
+		type target struct {
+			window   logicalWindowRow
+			provider string
+		}
+		var targets []target
+		for rows.Next() {
+			var t target
+			if err := rows.Scan(&t.window.id, &t.provider, &t.window.availability, &t.window.missingSinceMS); err != nil {
+				_ = rows.Close()
+				return 0, err
+			}
+			targets = append(targets, t)
+		}
+		if err := rows.Close(); err != nil {
+			return 0, err
+		}
+		providers := map[string]struct{}{}
+		for _, t := range targets {
+			if err := deactivateWindowWithReason(ctx, tx, t.window, nil, nowMS, nowMS,
+				"credential_removed", "credential_removed", false); err != nil {
+				return 0, err
+			}
+			providers[t.provider] = struct{}{}
+			closed++
+		}
+		for provider := range providers {
+			if err := clearInactiveContainerRelationships(ctx, tx, accountKey, provider, nowMS); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return closed, nil
+}
+
 func deactivateWindow(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -1790,7 +1861,8 @@ func deactivateWindowWithReason(
 	ctx context.Context,
 	tx *sql.Tx,
 	window logicalWindowRow,
-	observationID, observedAtMS, updatedAtMS int64,
+	observationID any, // an observation id, or nil when no observation caused the change
+	observedAtMS, updatedAtMS int64,
 	activationReason, cycleReason string,
 	preferMissingSince bool,
 ) error {
@@ -1800,7 +1872,7 @@ func deactivateWindowWithReason(
 	}
 	if _, err := tx.ExecContext(ctx, `update account_quota_windows set
 		availability = 'inactive', deactivated_at_ms = ?, absence_count = absence_count + 1,
-		last_observation_id = ?, updated_at_ms = ? where id = ?`,
+		last_observation_id = coalesce(?, last_observation_id), updated_at_ms = ? where id = ?`,
 		transitionMS, observationID, updatedAtMS, window.id); err != nil {
 		return err
 	}
@@ -1830,7 +1902,7 @@ func deactivateWindowWithReason(
 	}
 	_, err = tx.ExecContext(ctx, `update account_quota_cycles set
 		state = 'closed', actual_end_ms = ?, end_reason = ?,
-		last_observation_id = ?, updated_at_ms = ? where id = ?`,
+		last_observation_id = coalesce(?, last_observation_id), updated_at_ms = ? where id = ?`,
 		endMS, cycleReason, observationID, updatedAtMS, active.ID)
 	return err
 }

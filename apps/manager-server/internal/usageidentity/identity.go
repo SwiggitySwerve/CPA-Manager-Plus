@@ -392,6 +392,22 @@ func normalizeProvider(value string) string {
 	}
 }
 
+// AuthFileOfKey returns the auth file name embedded in a file-based account key
+// (kinds "file", "file-index", "file-project", "file-account", "file-label").
+// Keys that do not name a file (index, project, account, label and Codex
+// workspace or member keys) report false.
+func AuthFileOfKey(key string) (string, bool) {
+	parts := strings.Split(key, ":")
+	if len(parts) < 4 || parts[0] != keyPrefix || parts[1] != FormatVersion || !strings.HasPrefix(parts[2], "file") {
+		return "", false
+	}
+	raw, err := hex.DecodeString(parts[3])
+	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	return string(raw), true
+}
+
 func encodeKey(kind string, values ...string) string {
 	return encodeKeyWithTrim(kind, strings.TrimSpace, values...)
 }

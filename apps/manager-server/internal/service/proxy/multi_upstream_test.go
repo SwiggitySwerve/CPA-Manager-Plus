@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 )
 
@@ -497,5 +499,33 @@ func TestACredentialCreatedAfterTheLastListingIsStillRoutedToItsOwner(t *testing
 
 	if got := extra.lastRequest(); !strings.HasPrefix(got, "DELETE") {
 		t.Fatalf("delete of a file created inside the cache window reached the extra as %q, want DELETE", got)
+	}
+}
+
+func TestAuthFilesChangeHookRunsAfterTheMutationLockIsReleased(t *testing.T) {
+	primary := newFakeCPA(t, 200, codexFile)
+	coordinator := cpaauthfiles.NewMutationCoordinator()
+	cfg := config.Config{CPAUpstreamURL: primary.URL, ManagementKey: "management-key"}
+	svc := NewWithMutationCoordinator(managerconfig.New(cfg, nil, nil), coordinator)
+	var acquireErr error
+	called := false
+	svc.WithAuthFilesChangeHook(func(ctx context.Context, _ cpaauthfiles.MutationNotice) {
+		called = true
+		lockCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		release, err := coordinator.AcquireAll(lockCtx)
+		acquireErr = err
+		if err == nil {
+			release()
+		}
+	})
+
+	w := serve(svc, httptest.NewRequest(http.MethodDelete, "/v0/management/auth-files?name=codex-a.json", nil))
+
+	if w.Code != http.StatusOK || !called {
+		t.Fatalf("status %d, hook called %v; want a successful delete that notifies", w.Code, called)
+	}
+	if acquireErr != nil {
+		t.Fatalf("the hook ran while the auth-file mutation lock was still held: %v", acquireErr)
 	}
 }

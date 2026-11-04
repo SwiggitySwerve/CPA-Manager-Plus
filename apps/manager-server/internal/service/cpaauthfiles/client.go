@@ -213,6 +213,24 @@ func (c *Client) Fetch(ctx context.Context, baseURL string, managementKey string
 	return files, nil
 }
 
+// FetchInventory lists the auth files like Fetch but fails when the response has
+// no auth file list. An empty list is an answer; a body without one (for example
+// {} or an error object) is not, and must never be read as "every file is gone".
+func (c *Client) FetchInventory(ctx context.Context, baseURL string, managementKey string) ([]File, error) {
+	files := make([]File, 0)
+	listed, err := c.visitListed(ctx, baseURL, managementKey, "", "", func(file File) (bool, error) {
+		files = append(files, file)
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !listed {
+		return nil, fmt.Errorf("GET %s: response has no auth file list", authFilesPath)
+	}
+	return files, nil
+}
+
 func (c *Client) Visit(ctx context.Context, baseURL string, managementKey string, visit func(File) (bool, error)) error {
 	return c.visit(ctx, baseURL, managementKey, "", "", visit)
 }
@@ -225,37 +243,53 @@ func (c *Client) visit(
 	authIndex string,
 	visit func(File) (bool, error),
 ) error {
+	_, err := c.visitListed(ctx, baseURL, managementKey, fileName, authIndex, visit)
+	return err
+}
+
+// visitListed is visit that also reports whether the response carried an auth
+// file list at all, so callers can tell an empty list from a body that merely
+// parsed (for example {} or an error object).
+func (c *Client) visitListed(
+	ctx context.Context,
+	baseURL string,
+	managementKey string,
+	fileName string,
+	authIndex string,
+	visit func(File) (bool, error),
+) (bool, error) {
 	base := cpa.NormalizeBaseURL(baseURL)
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, authFilesEndpoint(base, fileName, authIndex), nil)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", authFilesPath, err)
+		return false, fmt.Errorf("GET %s: %w", authFilesPath, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+managementKey)
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", authFilesPath, err)
+		return false, fmt.Errorf("GET %s: %w", authFilesPath, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		return fmt.Errorf("GET %s: HTTP %d %s", authFilesPath, res.StatusCode, strings.TrimSpace(string(body)))
+		return false, fmt.Errorf("GET %s: HTTP %d %s", authFilesPath, res.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if visit == nil {
-		return errors.New("CPA auth file visitor is required")
+		return false, errors.New("CPA auth file visitor is required")
 	}
 	body, limit := c.limitedAuthFilesResponse(res.Body)
-	if err := scanFiles(body, visit); err != nil {
+	listed, err := scanFilesListed(body, visit)
+	if err != nil {
 		if body.N == 0 {
-			return fmt.Errorf("GET %s: %w", authFilesPath, responseTooLargeError("auth-files response", limit))
+			return false, fmt.Errorf("GET %s: %w", authFilesPath, responseTooLargeError("auth-files response", limit))
 		}
-		return fmt.Errorf("GET %s: %w", authFilesPath, err)
+		return false, fmt.Errorf("GET %s: %w", authFilesPath, err)
 	}
 	if body.N == 0 {
-		return fmt.Errorf("GET %s: %w", authFilesPath, responseTooLargeError("auth-files response", limit))
+		return false, fmt.Errorf("GET %s: %w", authFilesPath, responseTooLargeError("auth-files response", limit))
 	}
-	return nil
+	return listed, nil
 }
 
 func (c *Client) Find(ctx context.Context, baseURL string, managementKey string, fileName string, authIndex string) (File, bool, error) {
@@ -851,50 +885,56 @@ func Parse(body []byte) ([]File, error) {
 	return files, nil
 }
 
-func scanFiles(body io.Reader, visit func(File) (bool, error)) error {
+// scanFilesListed streams the auth files in body and reports whether the body held
+// a list (a top-level array, or an object with a list key) or a single file entry.
+func scanFilesListed(body io.Reader, visit func(File) (bool, error)) (bool, error) {
 	decoder := json.NewDecoder(body)
 	decoder.UseNumber()
 	token, err := decoder.Token()
 	if err != nil {
-		return err
+		return false, err
 	}
 	delimiter, ok := token.(json.Delim)
 	if !ok {
-		return fmt.Errorf("expected JSON object or array")
+		return false, fmt.Errorf("expected JSON object or array")
 	}
 	switch delimiter {
 	case '[':
 		_, err := scanFileArray(decoder, visit)
-		return err
+		return err == nil, err
 	case '{':
 		raw := make(map[string]any)
 		scannedList := false
 		for decoder.More() {
 			keyToken, err := decoder.Token()
 			if err != nil {
-				return err
+				return false, err
 			}
 			key, ok := keyToken.(string)
 			if !ok {
-				return fmt.Errorf("expected object key")
+				return false, fmt.Errorf("expected object key")
 			}
 			if !isAuthFilesListKey(key) {
 				var value any
 				if err := decoder.Decode(&value); err != nil {
-					return err
+					return false, err
 				}
 				raw[key] = value
 				continue
 			}
 			valueToken, err := decoder.Token()
 			if err != nil {
-				return err
+				return false, err
+			}
+			if valueToken == nil {
+				scannedList = true // an explicit null list is an empty list, as the management proxy reads it
+				continue
 			}
 			valueDelimiter, ok := valueToken.(json.Delim)
 			if !ok || valueDelimiter != '[' {
 				value, err := decodeValueAfterToken(decoder, valueToken)
 				if err != nil {
-					return err
+					return false, err
 				}
 				raw[key] = value
 				continue
@@ -902,19 +942,19 @@ func scanFiles(body io.Reader, visit func(File) (bool, error)) error {
 			scannedList = true
 			stopped, err := scanFileArray(decoder, visit)
 			if err != nil || stopped {
-				return err
+				return err == nil, err
 			}
 		}
 		if _, err := decoder.Token(); err != nil {
-			return err
+			return false, err
 		}
 		if !scannedList && stringField(raw, "name", "file_name", "fileName", "id") != "" {
 			_, err := visit(FromMap(raw))
-			return err
+			return err == nil, err
 		}
-		return nil
+		return scannedList, nil
 	default:
-		return fmt.Errorf("expected JSON object or array")
+		return false, fmt.Errorf("expected JSON object or array")
 	}
 }
 

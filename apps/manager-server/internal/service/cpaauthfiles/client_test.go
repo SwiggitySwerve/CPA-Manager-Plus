@@ -1524,3 +1524,43 @@ func TestClientFetchAndFindAcceptSingleAuthFileObject(t *testing.T) {
 		t.Fatalf("file=%#v ok=%t", file, ok)
 	}
 }
+
+func TestFetchInventoryRequiresAnAuthFileList(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		want    int
+		wantErr bool
+	}{
+		{name: "files list", status: 200, body: `{"files":[{"name":"a.json"},{"name":"b.json","disabled":true}]}`, want: 2},
+		{name: "explicit empty list", status: 200, body: `{"files":[]}`, want: 0},
+		{name: "null list reads as empty", status: 200, body: `{"files":null}`, want: 0},
+		{name: "list key holding a scalar is not a list", status: 200, body: `{"files":"none"}`, wantErr: true},
+		{name: "bare array", status: 200, body: `[{"name":"a.json"}]`, want: 1},
+		{name: "empty bare array", status: 200, body: `[]`, want: 0},
+		{name: "empty object is not a list", status: 200, body: `{}`, wantErr: true},
+		{name: "error object is not a list", status: 200, body: `{"error":"upstream warming up"}`, wantErr: true},
+		{name: "non-2xx", status: 503, body: `{"files":[]}`, wantErr: true},
+		{name: "truncated json", status: 200, body: `{"files":[{"name":"a.json"}`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			files, err := New(nil).FetchInventory(context.Background(), server.URL, "key")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("FetchInventory = %#v, want error", files)
+				}
+				return
+			}
+			if err != nil || len(files) != tc.want {
+				t.Fatalf("FetchInventory = %#v, %v; want %d files", files, err, tc.want)
+			}
+		})
+	}
+}

@@ -22,6 +22,9 @@ type Repository interface {
 	UpdatePendingStatus(ctx context.Context, id int64, status string) (model.AccountActionCandidate, error)
 	RecordFailure(ctx context.Context, id int64, reason string) error
 	MarkAutoDisabled(ctx context.Context, id int64, disabledAtMS int64) error
+	// MarkRemovedCredentials moves open candidates (pending, ignored) whose auth file
+	// is no longer live to the deleted status and returns how many changed.
+	MarkRemovedCredentials(ctx context.Context, isLive func(authFileName string) bool, nowMS int64) (int64, error)
 }
 
 type repository struct {
@@ -459,6 +462,44 @@ func (r *repository) MarkAutoDisabled(ctx context.Context, id int64, disabledAtM
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (r *repository) MarkRemovedCredentials(ctx context.Context, isLive func(authFileName string) bool, nowMS int64) (int64, error) {
+	rows, err := r.db.QueryContext(ctx, `select id, auth_file_name from account_action_candidates where status in (?, ?)`,
+		model.AccountActionStatusPending, model.AccountActionStatusIgnored)
+	if err != nil {
+		return 0, err
+	}
+	var removed []int64
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if !isLive(name) {
+			removed = append(removed, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var changed int64
+	for _, id := range removed {
+		res, err := r.db.ExecContext(ctx, `update account_action_candidates set status = ?, updated_at_ms = ?
+			where id = ? and status in (?, ?)`,
+			model.AccountActionStatusDeleted, nowMS, id, model.AccountActionStatusPending, model.AccountActionStatusIgnored)
+		if err != nil {
+			return changed, err
+		}
+		n, _ := res.RowsAffected()
+		changed += n
+	}
+	return changed, nil
 }
 
 func (r *repository) mustGet(ctx context.Context, id int64) (model.AccountActionCandidate, error) {

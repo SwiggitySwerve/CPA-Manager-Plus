@@ -55,6 +55,13 @@ type Repository interface {
 	ListWindowStates(ctx context.Context, accountKey, provider string) ([]model.AccountQuotaWindowState, error)
 	ListLegacyCodexWorkspaceWindowStates(ctx context.Context, accountKey, provider string) ([]model.AccountQuotaWindowState, error)
 	ListCyclePlanEvidence(ctx context.Context, cycleIDs []int64) (map[int64]CyclePlanEvidence, error)
+	// DeactivateAccounts closes the current windows of credentials that were
+	// removed, through the same inactive lifecycle a provider-removed window gets.
+	// History (snapshots, closed cycles) is kept; a later observation of the same
+	// account reactivates its windows. It returns how many windows were closed.
+	DeactivateAccounts(ctx context.Context, accountKeys []string, nowMS int64) (int64, error)
+	// ActiveAccountKeys lists the account keys that still have a current window.
+	ActiveAccountKeys(ctx context.Context) ([]string, error)
 }
 
 type repository struct {

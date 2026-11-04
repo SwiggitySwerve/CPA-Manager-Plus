@@ -280,6 +280,7 @@ func runServer() {
 		log.Printf("[startup] starting background workers")
 		automationRuntime.Start(ctx)
 		codexInspectionWorker.Start(ctx)
+		serverApp.AppContext().InventoryService.Start(ctx)
 		accountHistoryRollupWorker.Start(ctx)
 		usageDerivedRollupWorker.Start(ctx)
 		if usageHourlyAggregateWorker != nil {

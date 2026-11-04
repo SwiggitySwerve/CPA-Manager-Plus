@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { IconCheck, IconEye, IconRefreshCw, IconSearch, IconTrash2 } from '@/components/ui/icons';
+import { useInventoryRevalidation } from '@/hooks/useInventoryRevalidation';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
   usageServiceApi,
@@ -138,6 +139,13 @@ function AccountActionCandidatesPageContent() {
     if (featureAvailability.checking) return;
     void loadCandidates();
   }, [featureAvailability.checking, loadCandidates]);
+
+  useInventoryRevalidation({
+    managerBase,
+    managementKey,
+    enabled: !featureAvailability.checking,
+    onChange: () => loadCandidatesRef.current(),
+  });
 
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { pending: pendingCount };

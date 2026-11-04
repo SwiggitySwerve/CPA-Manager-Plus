@@ -76,6 +76,7 @@ import {
   hasActiveRun,
   isActiveRun,
 } from '@/features/monitoring/model/serverCodexInspectionLifecycle';
+import { useInventoryRevalidation } from '@/hooks/useInventoryRevalidation';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
   getUsageServiceErrorCode,
@@ -1162,6 +1163,22 @@ export function ServerCodexInspectionPage({
       t,
     ]
   );
+
+  // The result rows of a finished run are hidden or restored server-side when a credential is
+  // removed or added, but a silent poll keeps a historical run's detail, so reload it explicitly.
+  const revalidateAfterInventoryChange = useCallback(async () => {
+    await refreshRuns({ silent: true });
+    const selectedId = selectedRunIdRef.current;
+    if (serviceBase && selectedId != null) {
+      await loadRunDetail(serviceBase, selectedId).catch(() => null);
+    }
+  }, [loadRunDetail, refreshRuns, serviceBase]);
+
+  useInventoryRevalidation({
+    managerBase: serviceBase,
+    managementKey,
+    onChange: revalidateAfterInventoryChange,
+  });
 
   useEffect(() => {
     if (!serviceBase || (!selectedConfig.enabled && !hasRunningRun)) return;
