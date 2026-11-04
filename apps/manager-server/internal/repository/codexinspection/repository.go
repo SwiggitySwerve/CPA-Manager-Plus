@@ -39,6 +39,11 @@ type Repository interface {
 	GetLatestRunByTrigger(ctx context.Context, triggerType, triggerKey string) (model.CodexInspectionRun, bool, error)
 	GetLatestRunByTriggerType(ctx context.Context, triggerType string) (model.CodexInspectionRun, bool, error)
 	ListResults(ctx context.Context, runID int64) ([]model.CodexInspectionResult, error)
+	// SyncResultCredentialVisibility hides result rows (in every run) of auth files
+	// that are no longer live and shows them again if the file returns. Rows are
+	// kept as run history; ListResults skips the hidden ones. It returns how many
+	// rows changed.
+	SyncResultCredentialVisibility(ctx context.Context, isLive func(fileName string) bool, nowMS int64) (int64, error)
 	ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error)
 	ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error)
 	UpsertDisableOwnership(ctx context.Context, item model.CodexInspectionDisableOwnership) error
@@ -449,7 +454,7 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
 			plan_type, quota_windows_json, error_kind, error_detail, created_at_ms
 		from codex_inspection_results
-		where run_id = ?
+		where run_id = ? and credential_removed_at_ms is null
 		order by file_name asc, display_account asc, id asc`,
 		runID,
 	)
@@ -467,6 +472,56 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 		results = append(results, result)
 	}
 	return results, rows.Err()
+}
+
+func (r *repository) SyncResultCredentialVisibility(ctx context.Context, isLive func(fileName string) bool, nowMS int64) (int64, error) {
+	rows, err := r.db.QueryContext(ctx, `select file_name,
+			max(credential_removed_at_ms is null), max(credential_removed_at_ms is not null)
+		from codex_inspection_results group by file_name`)
+	if err != nil {
+		return 0, err
+	}
+	var hide, show []string
+	for rows.Next() {
+		var name string
+		var visible, hidden int
+		if err := rows.Scan(&name, &visible, &hidden); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		live := isLive(name)
+		if !live && visible == 1 {
+			hide = append(hide, name)
+		} else if live && hidden == 1 {
+			show = append(show, name)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var changed int64
+	for _, name := range hide {
+		res, err := r.db.ExecContext(ctx, `update codex_inspection_results set credential_removed_at_ms = ?
+			where file_name = ? and credential_removed_at_ms is null`, nowMS, name)
+		if err != nil {
+			return changed, err
+		}
+		n, _ := res.RowsAffected()
+		changed += n
+	}
+	for _, name := range show {
+		res, err := r.db.ExecContext(ctx, `update codex_inspection_results set credential_removed_at_ms = null
+			where file_name = ? and credential_removed_at_ms is not null`, name)
+		if err != nil {
+			return changed, err
+		}
+		n, _ := res.RowsAffected()
+		changed += n
+	}
+	return changed, nil
 }
 
 func (r *repository) ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error) {

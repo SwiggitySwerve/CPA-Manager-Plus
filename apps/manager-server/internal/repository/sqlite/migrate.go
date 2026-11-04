@@ -3013,6 +3013,7 @@ func ensureCodexInspectionResultColumns(db *sql.DB) error {
 		{name: "error_kind", definition: "text"},
 		{name: "error_detail", definition: "text"},
 		{name: "auto_recover_eligible", definition: "integer not null default 0"},
+		{name: "credential_removed_at_ms", definition: "integer"},
 	}
 	for _, column := range columns {
 		if _, ok := existing[column.name]; ok {

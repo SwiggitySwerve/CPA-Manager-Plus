@@ -20,6 +20,7 @@ import (
 	collectorsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	dashboardsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/dashboard"
+	inventorysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/inventory"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	modelpricesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/modelprice"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
@@ -69,6 +70,7 @@ type Context struct {
 	AccountProcessingPolicyService *automationsvc.Service
 	AuthFileMutationCoordinator    *cpaauthfiles.MutationCoordinator
 	QuotaCooldownRecoveryService   QuotaCooldownRecoveryService
+	InventoryService               *inventorysvc.Service
 	ProxyService                   *proxysvc.Service
 	PanelService                   *panelsvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
@@ -164,6 +166,7 @@ func fromExisting(
 		AggregateReadsEnabled: cfg.DashboardHourlyRollupEnabled,
 	}))
 	authFileMutationCoordinator := cpaauthfiles.NewMutationCoordinator()
+	inventoryService := inventorysvc.New(st, managerConfigService, cfg.ExtraUpstreamURLs)
 	return &Context{
 		UpdateCheckService:   updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
 		Config:               cfg,
@@ -193,11 +196,12 @@ func fromExisting(
 		),
 		AccountProcessingPolicyService: accountProcessingPolicyService,
 		AuthFileMutationCoordinator:    authFileMutationCoordinator,
+		InventoryService:               inventoryService,
 		ProxyService: proxysvc.NewWithMutationCoordinator(
 			managerConfigService,
 			authFileMutationCoordinator,
 			st,
-		).WithExtraUpstreams(cfg.ExtraUpstreamURLs).WithProviderUpstreams(cfg.ProviderUpstreams),
+		).WithExtraUpstreams(cfg.ExtraUpstreamURLs).WithProviderUpstreams(cfg.ProviderUpstreams).WithAuthFilesChangeHook(inventoryService.Notify),
 		PanelService:             panelsvc.New(cfg.PanelPath, embeddedPanel),
 		AutomationRuntimeService: runtimeService,
 	}

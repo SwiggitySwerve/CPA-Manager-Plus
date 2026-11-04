@@ -32,6 +32,7 @@ type Service struct {
 	providerUpstreams    map[string]string
 	oauth                oauthSessions
 	owners               upstreamOwners
+	onAuthFilesChanged   func(context.Context) // runs after a proxied auth-file mutation succeeded upstream
 }
 
 type authFileOwnershipMutation struct {
@@ -285,6 +286,7 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		}
 	}
 	responseProcessed := false
+	authFilesMutated := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
 		if !responseProcessed {
 			if restoreErr := s.restoreInspectionOwnershipDetached(r.Context(), revokedOwnership); restoreErr != nil {
@@ -298,6 +300,7 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return s.restoreInspectionOwnershipDetached(r.Context(), revokedOwnership)
 		}
+		authFilesMutated = isAuthFilesMutationRequest(r)
 		mutation, err := successfulAuthFileOwnershipMutation(response, ownershipMutation)
 		if err != nil {
 			// The upstream request may already have succeeded. Keep ownership revoked
@@ -308,6 +311,25 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		return s.restoreInspectionOwnershipDetached(r.Context(), ownershipItemsNotMutated(revokedOwnership, mutation))
 	}
 	proxy.ServeHTTP(w, r)
+	if authFilesMutated && s.onAuthFilesChanged != nil {
+		// The upstream accepted the change; reconcile now instead of at the next poll.
+		s.onAuthFilesChanged(context.WithoutCancel(r.Context()))
+	}
+}
+
+// WithAuthFilesChangeHook registers fn to run after a proxied auth-file mutation succeeded upstream.
+func (s *Service) WithAuthFilesChangeHook(fn func(context.Context)) *Service {
+	s.onAuthFilesChanged = fn
+	return s
+}
+
+func isAuthFilesMutationRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	path := strings.TrimRight(r.URL.Path, "/")
+	return path == authFilesPath || strings.HasPrefix(path, authFilesPath+"/")
 }
 
 func (s *Service) acquireAuthFileMutation(
