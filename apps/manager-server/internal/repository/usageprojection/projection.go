@@ -143,6 +143,32 @@ func SearchIndexLikePattern(query string) (string, bool) {
 	return "%" + query + "%", true
 }
 
+// SearchMatchSQL returns a predicate, true when the projected event eventIDColumn has a
+// search document containing query, for projected events in [fromMS, toMS). The trigram
+// index lists the matching events of all time, so its lookup is bounded by the lowest and
+// highest event ID in the range: without that, a one-hour search for a common word
+// verifies every matching event ever stored. Callers keep their own time condition; the
+// bound only narrows the index lookup.
+func SearchMatchSQL(eventIDColumn, searchTextColumn, query string, fromMS, toMS int64) (string, []any) {
+	if pattern, ok := SearchIndexLikePattern(query); ok {
+		bounds := fmt.Sprintf("(select coalesce(%%s(event_id), 0) from %s where timestamp_ms >= ? and timestamp_ms < ?)", EventTable)
+		return fmt.Sprintf("%s in (select rowid from %s where search_text like ? and rowid >= %s and rowid <= %s)",
+				eventIDColumn, SearchIndexTable, fmt.Sprintf(bounds, "min"), fmt.Sprintf(bounds, "max")),
+			[]any{pattern, fromMS, toMS, fromMS, toMS}
+	}
+	return searchTextColumn + " like ?", []any{"%" + strings.TrimSpace(strings.ToLower(query)) + "%"}
+}
+
+// CoverageSQL is a scalar subquery giving the highest event ID whose projection row is
+// current, or 0 while the projection is missing, incompatible or clearing (the conditions
+// of VerifyRetainedEdgeTx). Projection rows at or below it hold the event's columns as
+// stored in usage_events.
+func CoverageSQL() (string, []any) {
+	return `(select coalesce(max(coverage_event_id), 0) from usage_monitoring_rollup_state
+		where rollup_name = 'projection_v1' and schema_version = 1 and structure_revision = ? and status <> 'clearing')`,
+		[]any{usageidentity.MonitoringProjectionStructureRevision()}
+}
+
 func SnapshotKeyExpression(prefix string) string {
 	column := func(name string) string { return prefix + name }
 	return fmt.Sprintf(`case

@@ -3024,19 +3024,25 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	if query != "" {
 		like := "%" + query + "%"
 		searchConditions := make([]string, 0, len(analyticsSearchTextColumns)+1)
+		searchArgs := make([]any, 0, len(analyticsSearchTextColumns)+1)
 		for _, column := range analyticsSearchTextColumns {
 			expression := column
 			if column == "analytics_model" {
 				expression = usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")
 			}
 			searchConditions = append(searchConditions, fmt.Sprintf("lower(coalesce(%s, '')) like ?", expression))
-			args = append(args, like)
+			searchArgs = append(searchArgs, like)
 		}
 		if hash != "" {
 			searchConditions = append(searchConditions, "lower(coalesce(api_key_hash, '')) = ?")
-			args = append(args, hash)
+			searchArgs = append(searchArgs, hash)
 		}
-		conditions = append(conditions, "("+strings.Join(searchConditions, " or ")+")")
+		search := "(" + strings.Join(searchConditions, " or ") + ")"
+		if hash == "" && !strings.ContainsAny(query, "%_\x1f") {
+			search, searchArgs = projectedSearchCondition(filter, query, search, searchArgs)
+		}
+		conditions = append(conditions, search)
+		args = append(args, searchArgs...)
 	} else if hash != "" {
 		conditions = append(conditions, "lower(coalesce(api_key_hash, '')) = ?")
 		args = append(args, hash)
@@ -3091,6 +3097,33 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	}
 
 	return "where " + strings.Join(conditions, " and "), args
+}
+
+// projectedSearchCondition answers the per-column search from the monitoring projection for
+// the events it covers. The projection's search document joins the same columns, lowercased,
+// with a separator that a query without wildcards cannot contain: the query is in the document
+// exactly when it is in one column. The project ID is the one column the document stores
+// differently (trimmed, and blank for Codex account markers); the projection also keeps it as
+// stored, and it is matched there. Events past the projection's coverage keep the per-column
+// predicate. Both lists are computed once, and the outer row is only tested for membership by
+// ID, so a scan that an index covers stays on that index and wide rows are not read to search.
+// The unary plus keeps each list a filter on the time-range scan: driving the scan by IDs
+// would read every matching row from the table, and `id > coverage` must not replace the
+// time range while the projection is rebuilding and its coverage is low.
+func projectedSearchCondition(filter AnalyticsFilter, query, perColumn string, perColumnArgs []any) (string, []any) {
+	coverage, coverageArgs := usageprojection.CoverageSQL()
+	match, matchArgs := usageprojection.SearchMatchSQL("p.event_id", "p.search_text", query, filter.FromMS, filter.ToMS)
+	condition := fmt.Sprintf(`(+id in (select p.event_id from %s p
+		where p.event_id <= %s and p.timestamp_ms >= ? and p.timestamp_ms < ? and (%s or lower(p.auth_project_id_snapshot) like ?))
+		or +id in (select id from usage_events where +id > %s and timestamp_ms >= ? and timestamp_ms < ? and %s))`,
+		usageprojection.EventTable, coverage, match, coverage, perColumn)
+	args := append([]any{}, coverageArgs...)
+	args = append(args, filter.FromMS, filter.ToMS)
+	args = append(args, matchArgs...)
+	args = append(args, "%"+query+"%")
+	args = append(args, coverageArgs...)
+	args = append(args, filter.FromMS, filter.ToMS)
+	return condition, append(args, perColumnArgs...)
 }
 
 func addProviderCondition(values []string, conditions *[]string, args *[]any) {

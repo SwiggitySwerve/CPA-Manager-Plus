@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -214,4 +216,82 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 			t.Fatalf("SQL query error must not be classified as ErrRetainedCoverageIncomplete: %v", err)
 		}
 	})
+}
+
+// The trigram index lists matches of all time. A one-hour search for a word in most events
+// must not verify every match ever stored, so the lookup is bounded by the range's event IDs;
+// those bounds come from timestamps, so events stored out of time order still match.
+func TestSearchMatchSQLBoundsIndexLookupByRange(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+		create table usage_monitoring_event_projection_v1 (event_id integer primary key, timestamp_ms integer not null, search_text text not null);
+		create index idx_usage_monitoring_event_projection_timestamp on usage_monitoring_event_projection_v1(timestamp_ms desc, event_id desc);
+		create virtual table usage_monitoring_event_search_v1 using fts5(search_text, content = 'usage_monitoring_event_projection_v1',
+			content_rowid = 'event_id', columnsize = 0, detail = 'none', tokenize = 'trigram');
+		create trigger projection_insert after insert on usage_monitoring_event_projection_v1 begin
+			insert into usage_monitoring_event_search_v1(rowid, search_text) values (new.event_id, new.search_text);
+		end;`); err != nil {
+		t.Fatal(err)
+	}
+	texts := []string{"claude-opus-5-5\x1fpost", "gpt-6.1-sol\x1fpost", "claude-sonnet\x1fo'brien \"q\"", "é-opus\x1fnull", "x\x1fopus"}
+	for id := int64(1); id <= 400; id++ {
+		timestamp := id * 1_000
+		if id%97 == 0 {
+			timestamp = 5_000 + id // stored late, timestamped early
+		}
+		if _, err := db.Exec(`insert into usage_monitoring_event_projection_v1 values (?, ?, ?)`, id, timestamp, texts[id%int64(len(texts))]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(where string, args ...any) []int64 {
+		t.Helper()
+		rows, err := db.Query(`select event_id from usage_monitoring_event_projection_v1 p where `+where+` order by event_id`, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		result := []int64{}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			result = append(result, id)
+		}
+		return result
+	}
+	for _, query := range []string{"opus", "OPUS", "op", "sonnet\x1fo", "o'brien", `"q"`, "é-op", "nothing"} {
+		for _, span := range [][2]int64{{0, 1_000_000}, {4_000, 12_000}, {100_000, 101_000}, {390_500, 391_000}} {
+			match, args := SearchMatchSQL("p.event_id", "p.search_text", query, span[0], span[1])
+			where := "p.timestamp_ms >= ? and p.timestamp_ms < ? and " + match
+			got := ids(where, append([]any{span[0], span[1]}, args...)...)
+			want := ids("p.timestamp_ms >= ? and p.timestamp_ms < ? and p.search_text like ?", span[0], span[1], "%"+strings.ToLower(query)+"%")
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("query %q span %v: got %v, want %v", query, span, got, want)
+			}
+		}
+	}
+	match, args := SearchMatchSQL("p.event_id", "p.search_text", "opus", 100_000, 101_000)
+	rows, err := db.Query(`explain query plan select count(*) from usage_monitoring_event_projection_v1 p where p.timestamp_ms >= ? and p.timestamp_ms < ? and `+match, append([]any{100_000, 101_000}, args...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := []string{}
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	// FTS5 marks a LIKE constraint L and lower and upper rowid bounds > and <.
+	if !strings.Contains(strings.Join(plan, "\n"), "VIRTUAL TABLE INDEX 0:L0><") {
+		t.Fatalf("search index lookup is not bounded by event ID; plan=%v", plan)
+	}
 }
