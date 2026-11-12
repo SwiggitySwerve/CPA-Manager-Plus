@@ -32,10 +32,12 @@ Focused enforcement: `TestProxAnalyticsWholeScopePagingRatesAndSafeFields`,
 `TestProxAnalyticsPanelAuthorizationAndStrictBody`, `TestProxNullableRequestTokens`,
 `TestProxQueryBoundsAndCancelledAdmission`, and the pricing/usage analytics tests.
 
-The raw latency scan behind every view reads only `idx_usage_events_ts_latency_groups_cover`
-(timestamp, latency, TTFT, model, requested model, provider columns and `failed`). Without it the
-scan reads the wide `usage_events` rows and a cold 30-day view exceeds the 30-second deadline;
-the index is optional for correctness, so a database that has not built it yet only reads slower.
+When it exists, the raw latency scan behind a view without a search term reads only
+`idx_usage_events_ts_latency_groups_cover` (timestamp, latency, TTFT, model, requested model,
+provider columns and `failed`); search predicates read other columns and still scan the rows.
+Without the index the scan reads the wide `usage_events` rows and a cold 30-day view exceeds the
+30-second deadline; the index is optional for correctness, so a database that has not built it
+yet only reads slower.
 On a non-empty database `cleanup-derived` builds it offline, like the other deferred indexes.
 Ranks are picked by selection, not by sorting each group, and equal the SQL nearest rank.
 
