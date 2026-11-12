@@ -162,7 +162,7 @@ func TestWithModelPriceSnapshotBlocksMutationsUntilReadCompletes(t *testing.T) {
 	releaseRead := make(chan struct{})
 	readDone := make(chan error, 1)
 	go func() {
-		readDone <- db.WithModelPriceSnapshot(func() error {
+		readDone <- db.WithModelPriceSnapshot(ctx, func() error {
 			close(readStarted)
 			<-releaseRead
 			return nil
@@ -196,6 +196,97 @@ func TestWithModelPriceSnapshotBlocksMutationsUntilReadCompletes(t *testing.T) {
 	}
 	if prices["model-a"].Prompt != 2 {
 		t.Fatalf("updated price = %#v", prices["model-a"])
+	}
+}
+
+// A price save queued behind a long read blocks new snapshots. A request whose
+// context ends while it waits must return instead of waiting for both, and its
+// abandoned wait must not wedge the lock for anyone else.
+func TestWithModelPriceSnapshotWaitEndsWithContext(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	readStarted := make(chan struct{})
+	releaseRead := make(chan struct{})
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- db.WithModelPriceSnapshot(ctx, func() error {
+			close(readStarted)
+			<-releaseRead
+			return nil
+		})
+	}()
+	<-readStarted
+
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- db.SaveModelPrices(ctx, map[string]ModelPrice{"model-a": {Prompt: 2}})
+	}()
+	waitForPriceWriterQueued(t, db)
+
+	requestCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	ran := false
+	waitStarted := time.Now()
+	err = db.WithModelPriceSnapshot(requestCtx, func() error {
+		ran = true
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || ran {
+		t.Fatalf("snapshot behind a queued save = ran %t, err %v; want deadline exceeded without running", ran, err)
+	}
+	if waited := time.Since(waitStarted); waited > 2*time.Second {
+		t.Fatalf("snapshot returned %s after its deadline", waited)
+	}
+
+	// A save abandoned by its caller must not keep blocking readers either.
+	saveCtx, cancelSave := context.WithCancel(ctx)
+	abandonedSave := make(chan error, 1)
+	go func() {
+		abandonedSave <- db.SaveModelPrices(saveCtx, map[string]ModelPrice{"model-a": {Prompt: 3}})
+	}()
+	cancelSave()
+	if err := <-abandonedSave; !errors.Is(err, context.Canceled) {
+		t.Fatalf("abandoned save = %v, want context canceled", err)
+	}
+
+	close(releaseRead)
+	if err := <-readDone; err != nil {
+		t.Fatalf("long read: %v", err)
+	}
+	if err := <-writerDone; err != nil {
+		t.Fatalf("queued save: %v", err)
+	}
+	if err := db.WithModelPriceSnapshot(ctx, func() error { return nil }); err != nil {
+		t.Fatalf("snapshot after the save: %v", err)
+	}
+	prices, err := db.LoadModelPrices(ctx)
+	if err != nil {
+		t.Fatalf("load price: %v", err)
+	}
+	if prices["model-a"].Prompt != 2 {
+		t.Fatalf("price = %#v, want the queued save's value", prices["model-a"])
+	}
+}
+
+func waitForPriceWriterQueued(t *testing.T, db *Store) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		db.modelPricesMu.mu.Lock()
+		queued := db.modelPricesMu.waitingWriters
+		db.modelPricesMu.mu.Unlock()
+		if queued > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("price save never queued behind the read")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
