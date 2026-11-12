@@ -16,6 +16,10 @@ query tries the reserved slot first and then either slot; search-filtered querie
 raw rows, can take the whole deadline cold, and never use the reserved slot, so two of
 them cannot queue a fast view. The reserved slot is admission only: all queries still
 share the SQLite connection pool.
+The pool queues its writers (`internal/repository/sqlite/write_gate.go`): a write transaction
+or a statement outside a transaction waits its turn in Go, bounded by its context and a
+2-minute cap, instead of polling SQLite until `busy_timeout` and failing with SQLITE_BUSY.
+Read-only transactions and queries never queue, so analytics reads do not wait for writers.
 Every view then reads under one model-price snapshot (`WithModelPriceSnapshot`). A price
 save waits for running snapshots and blocks new ones, so that wait also ends with the
 request context: a cancelled or timed-out request returns its context error instead of

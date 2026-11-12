@@ -25,7 +25,7 @@ func OpenWithOptions(options Options) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dataSourceName(dbPath))
+	db, err := openWriteGated(dataSourceName(dbPath))
 	if err != nil {
 		return nil, enrichOpenError(dbPath, err)
 	}
