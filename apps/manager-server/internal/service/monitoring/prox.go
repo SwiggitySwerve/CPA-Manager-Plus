@@ -40,9 +40,9 @@ func (s *Service) ProxAnalytics(ctx context.Context, q ProxAnalyticsQuery) (Prox
 }
 
 // proxRollupEligible reports whether q's filters let the hourly rollups serve its
-// aggregates. Provider and search filters cannot, so those views scan raw rows and
-// can take the whole 30-second deadline cold. Whether the rollups really answer
-// (supplementary records, deleted history) is only known after admission.
+// aggregates. A search filter cannot, so that view scans raw rows and can take the
+// whole 30-second deadline cold. Whether the rollups really answer (supplementary
+// records, deleted history) is only known after admission.
 func proxRollupEligible(q ProxAnalyticsQuery) bool {
 	filter := store.AnalyticsFilter{SearchQuery: q.Search}
 	if q.Provider != "" {

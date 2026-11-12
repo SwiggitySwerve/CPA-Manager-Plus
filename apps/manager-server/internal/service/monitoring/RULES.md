@@ -10,12 +10,26 @@ catalog is supplied by the trusted adapter, not a browser. Queries accept at mos
 31 days, 200 rows, 1000 registrations, 256 bytes of search, an IANA timezone and a
 paired timestamp/ID cursor. Unknown JSON fields and trailing input are rejected.
 Two queries may run per service, plus one reserved slot for queries the hourly rollups
-can serve (no provider or search filter; `analyticsHourlyRollupEligible`), so at most
-three run at once. The controller's 30-second deadline includes the wait for a slot. A
-rollup-eligible query tries the reserved slot first and then either slot; provider- and
-search-filtered queries scan raw rows, can take the whole deadline cold, and never use
-the reserved slot, so two of them cannot queue a fast view. The reserved slot is
-admission only: all queries still share the SQLite connection pool.
+can serve (no search filter; `analyticsHourlyRollupEligible`), so at most three run at
+once. The controller's 30-second deadline includes the wait for a slot. A rollup-eligible
+query tries the reserved slot first and then either slot; search-filtered queries scan
+raw rows, can take the whole deadline cold, and never use the reserved slot, so two of
+them cannot queue a fast view. The reserved slot is admission only: all queries still
+share the SQLite connection pool.
+
+Model, outcome and provider filters are served by the hourly rollups. The provider is a
+key of `usage_pricing_hourly_provider_rollups_v1` only: the pricing rollup fills it in
+the same batch as `usage_pricing_hourly_rollups_v1`, with the same rows split by
+`coalesce(provider, '')` and `coalesce(auth_provider_snapshot, '')`, and a provider
+filter is the raw path's predicate on those two columns (either one matches, compared in
+lower case). The permanent core aggregate has no provider, so the store first checks the
+provider rows of every provider against it, then narrows the source that passed and
+derives the summary from those pricing rows; provider rows that do not add up to the core
+are recomputed from events, never served. Any new key column must keep that check: it is
+what makes a stale or half-built table read as slow, not as wrong. The table gets its
+history from the pricing rollup's rebuild, triggered by the layout suffix on
+`usagepricing.StructureRevision`; `stats_v1` keeps `PriceStructureRevision` and does not
+rebuild. While the rebuild runs, every view the pricing rollup serves reads events instead.
 
 Every primary view excludes explicitly supplementary records using the usage
 owner's retained-envelope predicate. Legacy records without record kind remain
@@ -38,11 +52,18 @@ thoughts) and explicit effective tier after identity generation. Archive restore
 preserves archived derived values. Historical repair needs a separately approved
 and verified typed migration, including projection/rollup invalidation.
 
+A response does not depend on the path that produced it. `ProxAnalytics` orders pricing
+rows by their whole key before it combines cost estimates, because estimates add floats
+and list reasons in row order; `TestProxProviderRollupMatchesRawPath` compares the raw
+and rollup responses byte for byte (`PROX_ROLLUP_EQUIVALENCE=full` for every filter on
+every range).
+
 Focused enforcement: `TestProxAnalyticsWholeScopePagingRatesAndSafeFields`,
 `TestProxAnalyticsPanelAuthorizationAndStrictBody`, `TestProxNullableRequestTokens`,
 `TestProxQueryBoundsAndCancelledAdmission`,
-`TestProxFastQueryIsAdmittedWhileSlowQueriesHoldGeneralSlots`, and the pricing/usage
-analytics tests.
+`TestProxFastQueryIsAdmittedWhileSlowQueriesHoldGeneralSlots`,
+`TestProxProviderRollupMatchesRawPath`, `TestProxProviderFilterExcludesSupplementaryRecords`,
+`TestReaderProviderFilterMatchesRawEvents`, and the pricing/usage analytics tests.
 
 When it exists, the raw latency scan behind a view without a search term reads only
 `idx_usage_events_ts_latency_groups_cover` (timestamp, latency, TTFT, model, requested model,

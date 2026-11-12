@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +166,104 @@ func TestProxProviderFilterExcludesSupplementaryRecords(t *testing.T) {
 	}
 	if raw, rollup := proxResponseJSON(t, ctx, service, q, true), proxResponseJSON(t, ctx, service, q, false); !bytes.Equal(raw, rollup) {
 		t.Fatalf("responses differ with a supplementary record in range\nraw:    %s\nrollup: %s", raw, rollup)
+	}
+}
+
+// A database written before the provider-keyed table existed has it empty and carries the
+// pricing revision without the layout suffix. The pricing rollup rebuilds once to fill it,
+// and nothing else does. Before, during and after that rebuild every view is still exact.
+func TestProxProviderViewStaysExactWhileProviderRollupFills(t *testing.T) {
+	db, sqlDB, endMS := proxProviderRollupFixture(t)
+	ctx := context.Background()
+	service := New(db, true)
+	hour := time.Hour.Milliseconds()
+	state, err := db.UsagePricingState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := state.StructureRevision
+	previous := strings.TrimSuffix(current, ":provider-1")
+	if previous == current || state.Status != "ready" && state.Status != "catching_up" {
+		t.Fatalf("pricing state before downgrade = %#v", state)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_provider_rollups_v1`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`update usage_pricing_hourly_rollups_v1 set structure_revision = ?`,
+		`update usage_pricing_account_rollups_v1 set structure_revision = ?`,
+		`update usage_pricing_rollup_state set structure_revision = ? where rollup_name = 'pricing_v1'`,
+	} {
+		if _, err := sqlDB.ExecContext(ctx, statement, previous); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statsRevision := func() string {
+		t.Helper()
+		var revision, status string
+		if err := sqlDB.QueryRowContext(ctx, `select structure_revision, status from usage_monitoring_rollup_state
+			where rollup_name = 'stats_v1'`).Scan(&revision, &status); err != nil {
+			t.Fatal(err)
+		}
+		return revision + " " + status
+	}
+	statsBefore := statsRevision()
+
+	aligned := endMS - endMS%hour
+	queries := []ProxAnalyticsQuery{
+		{FromMS: endMS - 30*24*hour, ToMS: endMS, TimeZone: "America/New_York", Granularity: "hour", Provider: "claude", Outcome: "all", Limit: 3},
+		{FromMS: aligned - 7*24*hour, ToMS: aligned, TimeZone: "UTC", Granularity: "day", Provider: "CODEX", Outcome: "success", Limit: 3},
+		{FromMS: aligned - 24*hour, ToMS: aligned, TimeZone: "UTC", Granularity: "hour", Provider: "gemini", Model: "shared-model", Outcome: "all", Limit: 3},
+		{FromMS: endMS - 31*24*hour, ToMS: endMS, TimeZone: "UTC", Granularity: "day", Outcome: "all", Limit: 3},
+	}
+	assertExact := func(stage string) {
+		t.Helper()
+		for _, q := range queries {
+			if raw, rollup := proxResponseJSON(t, ctx, service, q, true), proxResponseJSON(t, ctx, service, q, false); !bytes.Equal(raw, rollup) {
+				t.Fatalf("%s: rollup response differs from raw for %+v\nraw:    %s\nrollup: %s", stage, q, raw, rollup)
+			}
+		}
+	}
+	assertExact("before the rebuild")
+	statuses := map[string]bool{}
+	for step := 0; ; step++ {
+		result, err := db.CatchUpUsagePricing(ctx, 150, time.Now().UnixMilli())
+		if err != nil {
+			t.Fatalf("pricing rebuild step %d: %v", step, err)
+		}
+		state, err := db.UsagePricingState(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		statuses[state.Status] = true
+		if state.StructureRevision != current {
+			t.Fatalf("step %d revision = %q, want %q", step, state.StructureRevision, current)
+		}
+		assertExact(fmt.Sprintf("rebuild step %d (%s, coverage %d of %d)", step, state.Status, state.CoverageEventID, state.TargetEventID))
+		if !result.Pending {
+			break
+		}
+		if step > 100 {
+			t.Fatalf("rebuild did not finish: %#v", state)
+		}
+	}
+	if !statuses["rebuilding"] || !statuses["ready"] {
+		t.Fatalf("rebuild did not pass through rebuilding to ready: %v", statuses)
+	}
+	var providerRows, staleRows int
+	if err := sqlDB.QueryRowContext(ctx, `select
+		(select count(*) from usage_pricing_hourly_provider_rollups_v1 where structure_revision = ?),
+		(select count(*) from usage_pricing_hourly_provider_rollups_v1 where structure_revision <> ?)`, current, current).Scan(&providerRows, &staleRows); err != nil {
+		t.Fatal(err)
+	}
+	if providerRows == 0 || staleRows != 0 {
+		t.Fatalf("provider rows after rebuild = %d current, %d stale", providerRows, staleRows)
+	}
+	if after := statsRevision(); after != statsBefore {
+		t.Fatalf("stats rollup changed with the pricing layout: %q -> %q", statsBefore, after)
+	}
+	if result, err := db.CatchUpUsageMonitoringStats(ctx, 150, time.Now().UnixMilli()); err != nil || result.Rebuilt {
+		t.Fatalf("stats rollup rebuilt with the pricing layout: %#v %v", result, err)
 	}
 }
 
