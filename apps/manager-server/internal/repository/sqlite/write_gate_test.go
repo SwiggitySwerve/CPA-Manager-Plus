@@ -1,0 +1,270 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+// The live service logged SQLITE_BUSY from its background writers whenever one write
+// transaction held the lock longer than busy_timeout (5 s), for example while disk I/O was
+// saturated: every other pool writer gave up instead of waiting. Writers on the pool must
+// wait their turn, readers must not wait at all, and a writer's wait ends with its context.
+func TestPoolWritersWaitForALongWriteInsteadOfFailingBusy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("holds a write transaction past busy_timeout")
+	}
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `create table gate_probe (writer text not null)`); err != nil {
+		t.Fatal(err)
+	}
+
+	holder, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.ExecContext(ctx, `insert into gate_probe(writer) values ('holder')`); err != nil {
+		t.Fatal(err)
+	}
+	const hold = 5500 * time.Millisecond // longer than busy_timeout(5000)
+	released := time.Now().Add(hold)
+	go func() {
+		time.Sleep(hold)
+		_ = holder.Commit()
+	}()
+
+	// More queued writers than the configured pool size, so readers only get a connection
+	// if the queue cannot take theirs.
+	const statementWriters = defaultMaxOpenConns + 2
+	var wg sync.WaitGroup
+	errs := make(chan error, statementWriters+2)
+	wg.Add(statementWriters + 2)
+	go func() {
+		defer wg.Done()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `insert into gate_probe(writer) values ('transaction')`); err != nil {
+			errs <- err
+			return
+		}
+		errs <- tx.Commit()
+	}()
+	for index := 0; index < statementWriters; index++ {
+		go func() {
+			defer wg.Done()
+			_, err := db.ExecContext(ctx, `insert into gate_probe(writer) values ('statement')`)
+			errs <- err
+		}()
+	}
+	// A write run as a query (INSERT ... RETURNING) queues too.
+	go func() {
+		defer wg.Done()
+		var id int64
+		errs <- db.QueryRowContext(ctx, `insert into gate_probe(writer) values ('returning') returning rowid`).Scan(&id)
+	}()
+
+	// Readers are not queued behind the writers, and get pool connections.
+	time.Sleep(200 * time.Millisecond)
+	readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+	defer cancelRead()
+	var count int
+	if err := db.QueryRowContext(readCtx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+		t.Fatalf("read during the long write: %v", err)
+	}
+	readTx, err := db.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("read-only transaction during the long write: %v", err)
+	}
+	if err := readTx.QueryRowContext(readCtx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+		t.Fatalf("read in a read-only transaction during the long write: %v", err)
+	}
+	_ = readTx.Rollback()
+
+	// A writer whose context ends while it waits gets its context error, not BUSY.
+	shortCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if _, err := db.ExecContext(shortCtx, `insert into gate_probe(writer) values ('impatient')`); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writer with a short deadline = %v, want context deadline exceeded", err)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("writer behind a %s write failed: %v", hold, err)
+		}
+	}
+	if time.Now().Before(released) {
+		t.Fatal("writers finished before the long write committed")
+	}
+	if err := db.QueryRowContext(ctx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if want := statementWriters + 3; count != want {
+		t.Fatalf("rows = %d, want %d: holder, transaction, statements and returning", count, want)
+	}
+}
+
+// Transactions sent as SQL on a raw connection: a plain BEGIN (the full export's read
+// snapshot) must not hold writers back, and the ROLLBACK of a BEGIN IMMEDIATE must not
+// queue behind a pool writer that is waiting for it.
+func TestPoolWriteGateTracksTransactionStatements(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `create table gate_probe (writer text not null)`); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	if _, err := reader.ExecContext(ctx, `begin`); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := reader.QueryRowContext(ctx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(writeCtx, `insert into gate_probe(writer) values ('during read')`); err != nil {
+		t.Fatalf("write during a deferred read transaction: %v", err)
+	}
+	if _, err := reader.ExecContext(ctx, `commit`); err != nil {
+		t.Fatal(err)
+	}
+
+	locker, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	if _, err := locker.ExecContext(ctx, `begin immediate`); err != nil {
+		t.Fatal(err)
+	}
+	writerDone := make(chan error, 1)
+	go func() {
+		tx, err := db.BeginTx(ctx, nil)
+		if err == nil {
+			err = tx.Commit()
+		}
+		writerDone <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	rollbackCtx, cancelRollback := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelRollback()
+	if _, err := locker.ExecContext(rollbackCtx, `rollback`); err != nil {
+		t.Fatalf("rollback of the manual transaction: %v", err)
+	}
+	if err := <-writerDone; err != nil {
+		t.Fatalf("writer after the manual transaction: %v", err)
+	}
+}
+
+// A goroutine that holds the gate and writes through the pool again cannot be served by
+// the queue. After writeGateMaxWait it fails instead of hanging.
+func TestPoolWriteGateWaitIsBounded(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	previous := writeGateMaxWait
+	writeGateMaxWait = 100 * time.Millisecond
+	t.Cleanup(func() { writeGateMaxWait = previous })
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `create table gate_probe (writer text not null)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `insert into gate_probe(writer) values ('holder')`); err != nil {
+		t.Fatal(err)
+	}
+	nestedCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(nestedCtx, `insert into gate_probe(writer) values ('nested')`); !errors.Is(err, ErrWriteGateUnavailable) {
+		t.Fatalf("nested write while holding the gate = %v, want ErrWriteGateUnavailable", err)
+	}
+}
+
+// More writers than the queue holds: the ones that do not fit fail at once and give their
+// connections back, so readers still get connections while the queue is full.
+func TestPoolWriteQueueOverflowKeepsReaderConnections(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `create table gate_probe (writer text not null)`); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const writers = writeGateQueueLimit + defaultMaxOpenConns + 4
+	errs := make(chan error, writers)
+	for index := 0; index < writers; index++ {
+		go func() {
+			_, err := db.ExecContext(ctx, `insert into gate_probe(writer) values ('queued')`)
+			errs <- err
+		}()
+	}
+	overflowed := 0
+	deadline := time.After(10 * time.Second)
+	for overflowed < writers-writeGateQueueLimit {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, ErrWriteGateUnavailable) {
+				t.Fatalf("writer finished while the gate was held: %v", err)
+			}
+			overflowed++
+		case <-deadline:
+			t.Fatalf("only %d of %d overflow writers returned", overflowed, writers-writeGateQueueLimit)
+		}
+	}
+	readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+	defer cancelRead()
+	for index := 0; index < defaultMaxOpenConns; index++ {
+		readTx, err := db.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatalf("read-only transaction %d with the queue full: %v", index, err)
+		}
+		defer func() { _ = readTx.Rollback() }()
+		var count int
+		if err := readTx.QueryRowContext(readCtx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+			t.Fatalf("read %d with the queue full: %v", index, err)
+		}
+	}
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < writeGateQueueLimit; index++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("queued writer: %v", err)
+		}
+	}
+}

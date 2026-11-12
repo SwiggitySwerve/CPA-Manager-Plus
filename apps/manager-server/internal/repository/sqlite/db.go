@@ -25,11 +25,17 @@ func OpenWithOptions(options Options) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dataSourceName(dbPath))
+	db, err := openWriteGated(dataSourceName(dbPath))
 	if err != nil {
 		return nil, enrichOpenError(dbPath, err)
 	}
-	db.SetMaxOpenConns(options.maxOpenConns())
+	maxOpen := options.maxOpenConns()
+	if maxOpen > 1 {
+		// Room for queued writers beyond the readers' share; a one-connection pool
+		// serializes everything already.
+		maxOpen += writeGatePoolReserve
+	}
+	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(options.maxIdleConns())
 	db.SetConnMaxIdleTime(options.connMaxIdleTime())
 	if err := Migrate(db); err != nil {
