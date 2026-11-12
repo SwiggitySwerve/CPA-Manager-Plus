@@ -13,7 +13,7 @@ Two queries may run per service, plus one reserved slot for queries the hourly r
 can serve (no search filter; `analyticsHourlyRollupEligible`), so at most three run at
 once. The controller's 30-second deadline includes the wait for a slot. A rollup-eligible
 query tries the reserved slot first and then either slot; search-filtered queries scan
-raw rows, can take the whole deadline cold, and never use the reserved slot, so two of
+raw rows, are slower than rollup views, and never use the reserved slot, so two of
 them cannot queue a fast view. The reserved slot is admission only: all queries still
 share the SQLite connection pool.
 The pool queues its writers (`internal/repository/sqlite/write_gate.go`): a write transaction
@@ -89,14 +89,35 @@ Focused enforcement: `TestProxAnalyticsWholeScopePagingRatesAndSafeFields`,
 `TestProxProviderRollupMatchesRawPath`, `TestProxProviderFilterExcludesSupplementaryRecords`,
 `TestReaderProviderFilterMatchesRawEvents`, and the pricing/usage analytics tests.
 
-When it exists, the raw latency scan behind a view without a search term reads only
+When it exists, the raw latency scan behind a view reads only
 `idx_usage_events_ts_latency_groups_cover` (timestamp, latency, TTFT, model, requested model,
-provider columns and `failed`); search predicates read other columns and still scan the rows.
+provider columns and `failed`), with or without a search term (see search below).
 Without the index the scan reads the wide `usage_events` rows and a cold 30-day view exceeds the
 30-second deadline; the index is optional for correctness, so a database that has not built it
 yet only reads slower.
 On a non-empty database `cleanup-derived` builds it offline, like the other deferred indexes.
 Ranks are picked by selection, not by sorting each group, and equal the SQL nearest rank.
+
+A search term is matched through the monitoring projection, never by reading wide rows.
+Its trigram index (`usage_monitoring_event_search_v1`) lists matches of all time, so every
+lookup is bounded by the lowest and highest projected event ID in the requested range
+(`usageprojection.SearchMatchSQL`); unbounded, a one-hour search for a word in most events
+verified every match ever stored, about 3 seconds on the live database whatever the range.
+The raw `usage_events` readers (latency ranks, timeline, provider stats) test a search by event
+ID only (`projectedSearchCondition`): events at or below the projection's coverage
+(`usageprojection.CoverageSQL`, 0 while the projection is missing, of another revision or
+clearing) match on its search document or on the project ID as stored, which the document
+blanks for Codex account markers and trims but the per-column search reads; events above it
+are searched column by column. That is the per-column search exactly, because the document
+joins the same lowercased columns with a separator a query cannot contain; queries with LIKE
+wildcards or the separator keep the per-column search everywhere. Both ID lists are filters
+on the time-range scan (unary plus), so the latency scan stays on its covering index and a
+low coverage during a rebuild cannot turn a range scan into a table scan. The projection
+readers keep their own search semantics (no Codex markers), unchanged.
+`TestProxSearchMatchesColumnSearch` compares every search view with the projection's coverage
+forced to zero, byte for byte (`PROX_SEARCH_EQUIVALENCE=full` for every combination on every
+range); `TestSearchMatchSQLBoundsIndexLookupByRange` and the search cases of
+`TestLatencyBreakdownScanIsIndexOnly` hold the plans.
 
 The measured 30-day snapshot timeout justified `idx_usage_events_supplementary_v1`,
 a partial SQLite index of supplementary timestamp/IDs. Startup builds it once

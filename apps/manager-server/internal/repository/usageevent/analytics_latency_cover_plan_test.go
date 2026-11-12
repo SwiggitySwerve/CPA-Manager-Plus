@@ -33,6 +33,12 @@ func TestLatencyBreakdownScanIsIndexOnly(t *testing.T) {
 		"provider":               {FromMS: 1_000, ToMS: 2_000, IncludeFailed: true, Providers: []string{"claude"}},
 		"model":                  {FromMS: 1_000, ToMS: 2_000, IncludeFailed: true, Models: []string{"claude-opus-5-5"}},
 		"supplementary excluded": {FromMS: 1_000, ToMS: 2_000, IncludeFailed: true, ExcludeSupplementary: true},
+		// A search is answered from the monitoring projection, by event ID, for the events it
+		// covers; only events past its coverage are searched column by column.
+		"search":                {FromMS: 1_000, ToMS: 2_000, IncludeFailed: true, SearchQuery: "opus"},
+		"short search":          {FromMS: 1_000, ToMS: 2_000, IncludeFailed: true, SearchQuery: "op"},
+		"search with filters":   {FromMS: 1_000, ToMS: 2_000, Providers: []string{"claude"}, Models: []string{"claude-opus-5-5"}, SearchQuery: "Opus"},
+		"search, supplementary": {FromMS: 1_000, ToMS: 2_000, IncludeFailed: true, SearchQuery: "opus", ExcludeSupplementary: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			query, args := latencyBreakdownQuery(filter)

@@ -109,17 +109,9 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 		like := "%" + query + "%"
 		searchConditions := make([]string, 0, len(usageprojection.SearchColumns)+1)
 		if projected {
-			if likePattern, ok := usageprojection.SearchIndexLikePattern(query); ok {
-				searchConditions = append(searchConditions, fmt.Sprintf(
-					"%s in (select rowid from %s where search_text like ?)",
-					column("event_id"),
-					usageprojection.SearchIndexTable,
-				))
-				args = append(args, likePattern)
-			} else {
-				searchConditions = append(searchConditions, column("search_text")+" like ?")
-				args = append(args, like)
-			}
+			match, matchArgs := usageprojection.SearchMatchSQL(column("event_id"), column("search_text"), query, filter.FromMS, filter.ToMS)
+			searchConditions = append(searchConditions, match)
+			args = append(args, matchArgs...)
 		} else {
 			for _, searchColumn := range usageprojection.SearchColumns {
 				expression := column(searchColumn)
