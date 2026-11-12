@@ -653,6 +653,60 @@ func TestBuildTimelineIsIndependentOfPointOrder(t *testing.T) {
 	}
 }
 
+// Points that share a bucket, model, billing model and tier but differ in pricing band
+// (pricing model or context threshold) must still be summed in one order. Their costs
+// (0.1 and 0.3) add to a different float bucket cost in another order, and dropping
+// either tie-break key leaves some of these permutations unordered.
+func TestBuildTimelineIsIndependentOfPricingBandOrder(t *testing.T) {
+	band := func(pricingModel string, threshold int64) store.TimelinePoint {
+		point := store.TimelinePoint{BucketMS: 1_000, Model: "m", BillingModel: "m", Calls: 1, Success: 1, InputTokens: 1}
+		point.PricingModel, point.ContextThresholdTokens = pricingModel, threshold
+		return point
+	}
+	points := []store.TimelinePoint{band("m", -1), band("m", 20_000), band("m", 100_000), band("n", -1), band("n", 20_000)}
+	prices := map[string]store.ModelPrice{
+		"m": {Prompt: 100_000, ContextTiers: []store.ModelPriceContextTier{
+			{ThresholdTokens: 20_000, Prompt: 100_000, PromptConfigured: true},
+			{ThresholdTokens: 100_000, Prompt: 100_000, PromptConfigured: true},
+		}},
+		"n": {Prompt: 100_000, ContextTiers: []store.ModelPriceContextTier{
+			{ThresholdTokens: 20_000, Prompt: 300_000, PromptConfigured: true},
+		}},
+	}
+	var want []TimelinePoint
+	costs := map[float64]bool{}
+	var permute func(prefix, rest []store.TimelinePoint)
+	permute = func(prefix, rest []store.TimelinePoint) {
+		if len(rest) == 0 {
+			got := buildTimeline(prefix, nil, "hour", time.UTC, prices)
+			if want == nil {
+				want = got
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("timeline changed with band order %+v\ngot=%#v\nwant=%#v", prefix, got, want)
+			}
+			return
+		}
+		for index := range rest {
+			next := append(append([]store.TimelinePoint(nil), prefix...), rest[index])
+			remaining := append(append([]store.TimelinePoint(nil), rest[:index]...), rest[index+1:]...)
+			permute(next, remaining)
+		}
+	}
+	permute(nil, points)
+	// The fixture only proves something if the band costs really are order-sensitive.
+	for _, order := range [][]int{{0, 1, 2, 3, 4}, {0, 3, 1, 4, 2}, {3, 0, 4, 1, 2}} {
+		sum := 0.0
+		for _, index := range order {
+			sum += costForTimelinePoint(points[index], prices)
+		}
+		costs[sum] = true
+	}
+	if len(costs) < 2 {
+		t.Fatalf("band costs sum to %v in every order; the fixture does not exercise ordering", costs)
+	}
+}
+
 func TestModelCacheHitRateUsesBillingModelBeforeAliasAggregation(t *testing.T) {
 	stats := []store.ModelStat{
 		{

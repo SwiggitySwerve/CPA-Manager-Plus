@@ -35,6 +35,17 @@ history from the pricing rollup's rebuild, triggered by the layout suffix on
 `usagepricing.StructureRevision`; `stats_v1` keeps `PriceStructureRevision` and does not
 rebuild. While the rebuild runs, every view the pricing rollup serves reads events instead.
 
+Latency has two meanings and both hourly pricing tables keep both. `latency_sum_ms` and
+`latency_samples` count every nonzero latency, like the core aggregate, the raw summary and
+the coverage check. `positive_latency_sum_ms` and `positive_latency_samples` count latencies
+above zero only, like the raw timeline and the latency ranks; the rollup timeline reads those.
+Ingestion keeps negative timings, so the two differ whenever one is stored
+(`TestProxRollupTimelineIgnoresNonPositiveLatency`; the equivalence fixture stores negative
+latency and TTFT). The coverage check cannot see the positive pair: it is exact because the
+`provider-2` layout revision rebuilds every pricing row with it. TTFT has no rollup column.
+Timeline points are summed in full key order, pricing band included
+(`TestBuildTimelineIsIndependentOfPricingBandOrder`).
+
 Every primary view excludes explicitly supplementary records using the usage
 owner's retained-envelope predicate. Legacy records without record kind remain
 included and ambiguous. No IDs, stored rows, accounting values, archive retention or

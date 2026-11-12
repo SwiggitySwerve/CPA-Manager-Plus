@@ -351,6 +351,8 @@ func Migrate(db *sql.DB) error {
 			latency_sum_ms integer not null default 0,
 			latency_samples integer not null default 0,
 			zero_token_calls integer not null default 0,
+			positive_latency_sum_ms integer not null default 0,
+			positive_latency_samples integer not null default 0,
 			updated_at_ms integer not null,
 			primary key (
 				structure_revision, bucket_ms, model, billing_model, pricing_model,
@@ -386,6 +388,8 @@ func Migrate(db *sql.DB) error {
 			latency_sum_ms integer not null default 0,
 			latency_samples integer not null default 0,
 			zero_token_calls integer not null default 0,
+			positive_latency_sum_ms integer not null default 0,
+			positive_latency_samples integer not null default 0,
 			updated_at_ms integer not null,
 			primary key (
 				structure_revision, bucket_ms, model, billing_model, pricing_model,
@@ -1108,6 +1112,9 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureUsageHourlyAggregateRevisionColumns(db); err != nil {
+		return err
+	}
+	if err := ensureUsagePricingPositiveLatencyColumns(db); err != nil {
 		return err
 	}
 	if err := ensureUsageHourlyAggregateSchemaVersion(db, usageHourlyAggregateSnapshot, monitoringSnapshot.sourceTableMissing()); err != nil {
@@ -2434,6 +2441,32 @@ func ensureUsageHourlyAggregateRevisionColumns(db *sql.DB) error {
 		}
 		if _, err := tx.Exec(`alter table ` + column.tableName + ` add column ` + column.ddl); err != nil {
 			return fmt.Errorf("add %s.%s: %w", column.tableName, column.name, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// ensureUsagePricingPositiveLatencyColumns adds the positive-only latency columns to hourly
+// pricing tables created by older builds. Their old rows carry an older layout revision, are
+// never read, and the pricing rollup's rebuild refills the tables with the new columns set.
+func ensureUsagePricingPositiveLatencyColumns(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, tableName := range []string{"usage_pricing_hourly_rollups_v1", usagePricingHourlyProviderTable} {
+		for _, column := range []string{"positive_latency_sum_ms", "positive_latency_samples"} {
+			hasColumn, err := tableHasColumn(tx, tableName, column)
+			if err != nil {
+				return err
+			}
+			if hasColumn {
+				continue
+			}
+			if _, err := tx.Exec(`alter table ` + tableName + ` add column ` + column + ` integer not null default 0`); err != nil {
+				return fmt.Errorf("add %s.%s: %w", tableName, column, err)
+			}
 		}
 	}
 	return tx.Commit()

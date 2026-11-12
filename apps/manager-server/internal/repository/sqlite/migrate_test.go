@@ -134,6 +134,37 @@ func TestUsageArchiveRunMigrationAddsRequestedStageColumn(t *testing.T) {
 	}
 }
 
+func TestMigrateAddsPositiveLatencyColumnsToHourlyPricingTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage-pricing-positive-latency.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	tables := []string{"usage_pricing_hourly_rollups_v1", usagePricingHourlyProviderTable}
+	for _, table := range tables {
+		for _, column := range []string{"positive_latency_sum_ms", "positive_latency_samples"} {
+			if _, err := db.Exec(`alter table ` + table + ` drop column ` + column); err != nil {
+				_ = db.Close()
+				t.Fatalf("remove %s.%s fixture: %v", table, column, err)
+			}
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, table := range tables {
+		columns := migrationTableColumns(t, db, table)
+		if !columns["positive_latency_sum_ms"] || !columns["positive_latency_samples"] {
+			t.Fatalf("%s columns = %#v", table, columns)
+		}
+	}
+}
+
 func TestUsageArchiveRunProgressColumnsMigrateIndependently(t *testing.T) {
 	progressColumns := []string{"progress_phase", "progress_current", "progress_total", "progress_unit", "progress_updated_at_ms"}
 	for _, testCase := range []struct {

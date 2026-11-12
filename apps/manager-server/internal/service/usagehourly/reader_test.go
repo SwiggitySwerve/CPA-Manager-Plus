@@ -239,15 +239,20 @@ func TestAnalyticsTimelineAccumulatesLatencyBeforeAveraging(t *testing.T) {
 			Calls:          1,
 			LatencySumMS:   1,
 			LatencySamples: 1,
+			// The timeline reads the positive-only pair.
+			PositiveLatencySumMS:   1,
+			PositiveLatencySamples: 1,
 		},
 		{
-			PricingBand:    usage.PricingBand{PricingModel: "model-a", ContextThresholdTokens: model.ModelPriceBaseContextThreshold},
-			BucketMS:       hourMS,
-			Model:          "model-a",
-			BillingModel:   "model-a",
-			Calls:          7,
-			LatencySumMS:   29,
-			LatencySamples: 7,
+			PricingBand:            usage.PricingBand{PricingModel: "model-a", ContextThresholdTokens: model.ModelPriceBaseContextThreshold},
+			BucketMS:               hourMS,
+			Model:                  "model-a",
+			BillingModel:           "model-a",
+			Calls:                  7,
+			LatencySumMS:           29,
+			LatencySamples:         7,
+			PositiveLatencySumMS:   29,
+			PositiveLatencySamples: 7,
 		},
 	}
 
