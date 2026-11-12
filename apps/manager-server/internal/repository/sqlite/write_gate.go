@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,10 +19,11 @@ import (
 // take it, so analytics readers are not held up. busy_timeout still covers other
 // processes and connections outside the pool.
 //
-// A queued writer keeps the pool connection it waits on. So that queued writers cannot take
-// the connections readers need, the pool gets writeGatePoolReserve connections more than
-// its configured size, and at most writeGateQueueLimit writers queue at once; a writer
-// beyond that goes straight to SQLite and polls as before the gate.
+// A queued writer keeps the pool connection it waits on. So that writers can never take the
+// connections readers need, the pool gets writeGatePoolReserve connections more than its
+// configured size, and no writer outside the gate touches SQLite: at most
+// writeGateQueueLimit writers queue at once, and a writer that finds the queue full, or
+// waits writeGateMaxWait, fails with ErrWriteGateUnavailable and returns its connection.
 type writeGateConnector struct {
 	dsn    string
 	driver driver.Driver
@@ -29,7 +31,7 @@ type writeGateConnector struct {
 }
 
 const (
-	writeGateQueueLimit = 8
+	writeGateQueueLimit = 32
 	// writeGatePoolReserve covers the writer holding the gate and every queued writer.
 	writeGatePoolReserve = writeGateQueueLimit + 1
 )
@@ -83,47 +85,46 @@ type writeGateConn struct {
 	inTx bool
 }
 
-// writeGateMaxWait bounds the wait in the queue. A writer still queued after it goes on to
-// SQLite, whose busy_timeout then applies as it did before the gate: a goroutine that
-// holds the gate and writes through the pool again fails with SQLITE_BUSY instead of
-// hanging.
+// writeGateMaxWait bounds the wait in the queue, so a goroutine that holds the gate and
+// writes through the pool again fails instead of hanging.
 var writeGateMaxWait = 2 * time.Minute
+
+// ErrWriteGateUnavailable is returned to a writer that found the pool's write queue full or
+// waited writeGateMaxWait in it. Like SQLITE_BUSY before the queue, it means try later.
+var ErrWriteGateUnavailable = errors.New("sqlite write queue unavailable")
 
 func (c *writeGateConn) inner() sqliteConn { return c.conn.(sqliteConn) }
 
-// acquire waits for the gate. It reports whether it took the gate, which the caller must
-// then release; it returns false without error when the queue is full or the wait reached
-// writeGateMaxWait.
-func (c *writeGateConn) acquire(ctx context.Context) (bool, error) {
+// acquire waits for the gate, which the caller must then release.
+func (c *writeGateConn) acquire(ctx context.Context) error {
 	select {
 	case c.gate.slot <- struct{}{}:
-		return true, nil
+		return nil
 	default:
 	}
 	if c.gate.waiting.Add(1) > writeGateQueueLimit {
 		c.gate.waiting.Add(-1)
-		return false, nil
+		return ErrWriteGateUnavailable
 	}
 	defer c.gate.waiting.Add(-1)
 	timer := time.NewTimer(writeGateMaxWait)
 	defer timer.Stop()
 	select {
 	case c.gate.slot <- struct{}{}:
-		return true, nil
+		return nil
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return ctx.Err()
 	case <-timer.C:
-		return false, nil
+		return ErrWriteGateUnavailable
 	}
 }
 
 func (c *writeGateConn) release() { <-c.gate.slot }
 
 func (c *writeGateConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	gated := false
-	if !opts.ReadOnly {
-		var err error
-		if gated, err = c.acquire(ctx); err != nil {
+	gated := !opts.ReadOnly
+	if gated {
+		if err := c.acquire(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -169,13 +170,10 @@ func (c *writeGateConn) ExecContext(ctx context.Context, query string, args []dr
 	if c.inTx {
 		return c.inner().ExecContext(ctx, query, args)
 	}
-	gated, err := c.acquire(ctx)
-	if err != nil {
+	if err := c.acquire(ctx); err != nil {
 		return nil, err
 	}
-	if gated {
-		defer c.release()
-	}
+	defer c.release()
 	return c.inner().ExecContext(ctx, query, args)
 }
 
@@ -206,14 +204,10 @@ func (c *writeGateConn) QueryContext(ctx context.Context, query string, args []d
 	if c.inTx || !writeStatement(query) {
 		return c.inner().QueryContext(ctx, query, args)
 	}
-	gated, err := c.acquire(ctx)
-	if err != nil {
+	if err := c.acquire(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := c.inner().QueryContext(ctx, query, args)
-	if !gated {
-		return rows, err
-	}
 	if err != nil {
 		c.release()
 		return nil, err

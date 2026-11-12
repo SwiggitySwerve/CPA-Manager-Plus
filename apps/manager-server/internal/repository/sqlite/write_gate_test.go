@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -181,8 +180,7 @@ func TestPoolWriteGateTracksTransactionStatements(t *testing.T) {
 }
 
 // A goroutine that holds the gate and writes through the pool again cannot be served by
-// the queue. After writeGateMaxWait it reaches SQLite and fails with SQLITE_BUSY, as it did
-// before the gate, instead of hanging.
+// the queue. After writeGateMaxWait it fails instead of hanging.
 func TestPoolWriteGateWaitIsBounded(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
@@ -206,8 +204,67 @@ func TestPoolWriteGateWaitIsBounded(t *testing.T) {
 	}
 	nestedCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	_, err = db.ExecContext(nestedCtx, `insert into gate_probe(writer) values ('nested')`)
-	if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") {
-		t.Fatalf("nested write while holding the gate = %v, want SQLITE_BUSY", err)
+	if _, err := db.ExecContext(nestedCtx, `insert into gate_probe(writer) values ('nested')`); !errors.Is(err, ErrWriteGateUnavailable) {
+		t.Fatalf("nested write while holding the gate = %v, want ErrWriteGateUnavailable", err)
+	}
+}
+
+// More writers than the queue holds: the ones that do not fit fail at once and give their
+// connections back, so readers still get connections while the queue is full.
+func TestPoolWriteQueueOverflowKeepsReaderConnections(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `create table gate_probe (writer text not null)`); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const writers = writeGateQueueLimit + defaultMaxOpenConns + 4
+	errs := make(chan error, writers)
+	for index := 0; index < writers; index++ {
+		go func() {
+			_, err := db.ExecContext(ctx, `insert into gate_probe(writer) values ('queued')`)
+			errs <- err
+		}()
+	}
+	overflowed := 0
+	deadline := time.After(10 * time.Second)
+	for overflowed < writers-writeGateQueueLimit {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, ErrWriteGateUnavailable) {
+				t.Fatalf("writer finished while the gate was held: %v", err)
+			}
+			overflowed++
+		case <-deadline:
+			t.Fatalf("only %d of %d overflow writers returned", overflowed, writers-writeGateQueueLimit)
+		}
+	}
+	readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+	defer cancelRead()
+	for index := 0; index < defaultMaxOpenConns; index++ {
+		readTx, err := db.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatalf("read-only transaction %d with the queue full: %v", index, err)
+		}
+		defer func() { _ = readTx.Rollback() }()
+		var count int
+		if err := readTx.QueryRowContext(readCtx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+			t.Fatalf("read %d with the queue full: %v", index, err)
+		}
+	}
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < writeGateQueueLimit; index++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("queued writer: %v", err)
+		}
 	}
 }

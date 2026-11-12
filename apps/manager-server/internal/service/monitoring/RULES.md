@@ -17,12 +17,14 @@ raw rows, can take the whole deadline cold, and never use the reserved slot, so 
 them cannot queue a fast view. The reserved slot is admission only: all queries still
 share the SQLite connection pool.
 The pool queues its writers (`internal/repository/sqlite/write_gate.go`): a write transaction
-or a statement outside a transaction waits its turn in Go, bounded by its context and a
-2-minute cap, instead of polling SQLite until `busy_timeout` and failing with SQLITE_BUSY.
+or a statement outside a transaction waits its turn in Go, bounded by its context, instead
+of polling SQLite until `busy_timeout` and failing with SQLITE_BUSY.
 Read-only transactions and queries never queue, so analytics reads do not wait for writers.
 Writes run as queries (`INSERT ... RETURNING`) queue until their rows close. A queued writer
-keeps its pool connection, so the pool has 9 connections beyond its configured 4 for the gate
-holder and at most 8 queued writers; a ninth queued writer polls SQLite as before.
+keeps its pool connection, so the pool has 33 connections beyond its configured 4 for the
+gate holder and at most 32 queued writers, and no pool writer touches SQLite outside the
+gate: one that finds the queue full, or waits 2 minutes, fails with `ErrWriteGateUnavailable`
+and returns its connection (`TestPoolWriteQueueOverflowKeepsReaderConnections`).
 Every view then reads under one model-price snapshot (`WithModelPriceSnapshot`). A price
 save waits for running snapshots and blocks new ones, so that wait also ends with the
 request context: a cancelled or timed-out request returns its context error instead of
