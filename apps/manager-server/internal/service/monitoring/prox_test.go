@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -114,10 +115,56 @@ func TestProxQueryBoundsAndCancelledAdmission(t *testing.T) {
 	service := New(newMonitoringTestStore(t))
 	service.proxQueries <- struct{}{}
 	service.proxQueries <- struct{}{}
+	service.proxFastQueries <- struct{}{}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	if _, err := service.ProxAnalytics(ctx, valid); err == nil {
 		t.Fatal("cancelled admission succeeded")
+	}
+}
+
+// Cold provider and search views scan raw rows for up to the 30-second deadline. Two of
+// them hold both general slots; a view the hourly rollups serve must still be admitted,
+// and a slow one must still queue.
+func TestProxFastQueryIsAdmittedWhileSlowQueriesHoldGeneralSlots(t *testing.T) {
+	base := ProxAnalyticsQuery{FromMS: 1, ToMS: 1000, TimeZone: "UTC", Granularity: "hour", Outcome: "all"}
+	provider, search, model := base, base, base
+	provider.Provider, search.Search, model.Model = "claude", "needle", "m"
+	for name, tc := range map[string]struct {
+		query       ProxAnalyticsQuery
+		holdFast    bool
+		wantAdmit   bool
+		generalHeld int
+	}{
+		"unfiltered":                   {base, false, true, 2},
+		"model filter":                 {model, false, true, 2},
+		"provider waits":               {provider, false, false, 2},
+		"search waits":                 {search, false, false, 2},
+		"fast falls back to a general": {base, true, true, 1},
+		"fast waits when all held":     {base, true, false, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := New(newMonitoringTestStore(t))
+			for i := 0; i < tc.generalHeld; i++ {
+				service.proxQueries <- struct{}{}
+			}
+			if tc.holdFast {
+				service.proxFastQueries <- struct{}{}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if !tc.wantAdmit {
+				ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+				defer cancel()
+			}
+			_, err := service.ProxAnalytics(ctx, tc.query)
+			if tc.wantAdmit && err != nil {
+				t.Fatalf("query was not admitted: %v", err)
+			}
+			if !tc.wantAdmit && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("query was admitted past held slots: %v", err)
+			}
+		})
 	}
 }
 

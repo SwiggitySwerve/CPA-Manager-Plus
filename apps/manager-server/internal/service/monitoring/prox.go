@@ -22,14 +22,13 @@ func (s *Service) ProxAnalytics(ctx context.Context, q ProxAnalyticsQuery) (Prox
 	if err := ValidateProxAnalyticsQuery(q); err != nil {
 		return ProxAnalyticsResponse{}, err
 	}
-	select {
-	case s.proxQueries <- struct{}{}:
-		defer func() { <-s.proxQueries }()
-	case <-ctx.Done():
-		return ProxAnalyticsResponse{}, ctx.Err()
+	release, err := s.admitProx(ctx, proxRollupEligible(q))
+	if err != nil {
+		return ProxAnalyticsResponse{}, err
 	}
+	defer release()
 	var result ProxAnalyticsResponse
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err = s.store.WithModelPriceSnapshot(func() error {
 		var err error
 		result, err = s.proxAnalytics(ctx, q, false)
 		if errors.Is(err, errSupplementaryChanged) {
@@ -38,6 +37,42 @@ func (s *Service) ProxAnalytics(ctx context.Context, q ProxAnalyticsQuery) (Prox
 		return err
 	})
 	return result, err
+}
+
+// proxRollupEligible reports whether q's filters let the hourly rollups serve its
+// aggregates. Provider and search filters cannot, so those views scan raw rows and
+// can take the whole 30-second deadline cold. Whether the rollups really answer
+// (supplementary records, deleted history) is only known after admission.
+func proxRollupEligible(q ProxAnalyticsQuery) bool {
+	filter := store.AnalyticsFilter{SearchQuery: q.Search}
+	if q.Provider != "" {
+		filter.Providers = []string{q.Provider}
+	}
+	return analyticsHourlyRollupEligible(filter)
+}
+
+// admitProx takes a slot for one query. Every query may use the two general slots; a
+// rollup-eligible query also owns a reserved third slot, tried first, so two slow raw
+// scans holding both general slots cannot queue a fast view behind them. Slow queries
+// never take the reserved slot, so at most three queries run per service.
+func (s *Service) admitProx(ctx context.Context, fast bool) (func(), error) {
+	var reserved chan struct{} // nil blocks forever in the select below
+	if fast {
+		reserved = s.proxFastQueries
+		select {
+		case reserved <- struct{}{}:
+			return func() { <-reserved }, nil
+		default:
+		}
+	}
+	select {
+	case reserved <- struct{}{}:
+		return func() { <-reserved }, nil
+	case s.proxQueries <- struct{}{}:
+		return func() { <-s.proxQueries }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 var errSupplementaryChanged = errors.New("supplementary records arrived during analytics")
