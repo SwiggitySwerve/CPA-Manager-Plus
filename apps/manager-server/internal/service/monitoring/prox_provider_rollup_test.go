@@ -182,7 +182,7 @@ func TestProxProviderViewStaysExactWhileProviderRollupFills(t *testing.T) {
 		t.Fatal(err)
 	}
 	current := state.StructureRevision
-	previous := strings.TrimSuffix(current, ":provider-1")
+	previous := strings.TrimSuffix(current, ":provider-2")
 	if previous == current || state.Status != "ready" && state.Status != "catching_up" {
 		t.Fatalf("pricing state before downgrade = %#v", state)
 	}
@@ -264,6 +264,46 @@ func TestProxProviderViewStaysExactWhileProviderRollupFills(t *testing.T) {
 	}
 	if result, err := db.CatchUpUsageMonitoringStats(ctx, 150, time.Now().UnixMilli()); err != nil || result.Rebuilt {
 		t.Fatalf("stats rollup rebuilt with the pricing layout: %#v %v", result, err)
+	}
+}
+
+// Two events in one provider, model and hour with latencies -100 and 100 average 100 ms on
+// the raw timeline, which counts positive latencies only. The rollups must give the same.
+func TestProxRollupTimelineIgnoresNonPositiveLatency(t *testing.T) {
+	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := store.New(sqlDB)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	hour := time.Hour.Milliseconds()
+	bucketMS := time.Date(2026, time.November, 3, 10, 0, 0, 0, time.UTC).UnixMilli()
+	events := []usage.Event{}
+	for index, value := range []int64{-100, 100, 0} {
+		latency := value
+		event := monitoringEvent(fmt.Sprintf("negative-latency-%d", index), bucketMS+int64(index+1)*60_000, "claude-only", "auth", "source", false, 100, 10, 0, 0, 110, &latency)
+		event.Provider, event.AuthProviderSnapshot = "claude", "claude"
+		events = append(events, event)
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	service := New(db, true)
+	for _, provider := range []string{"", "claude"} {
+		q := ProxAnalyticsQuery{FromMS: bucketMS, ToMS: bucketMS + hour, TimeZone: "UTC", Granularity: "hour", Provider: provider, Outcome: "all", Limit: 3}
+		raw, rollup := proxResponseJSON(t, ctx, service, q, true), proxResponseJSON(t, ctx, service, q, false)
+		if !bytes.Equal(raw, rollup) {
+			t.Fatalf("provider %q: rollup response differs from raw\nraw:    %s\nrollup: %s", provider, raw, rollup)
+		}
+		var response ProxAnalyticsResponse
+		if err := json.Unmarshal(rollup, &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Timeline) != 1 || response.Timeline[0].AverageLatencyMS == nil || *response.Timeline[0].AverageLatencyMS != 100 {
+			t.Fatalf("provider %q timeline = %+v, want one point averaging 100 ms", provider, response.Timeline)
+		}
 	}
 }
 
@@ -368,6 +408,16 @@ func proxProviderRollupFixture(t *testing.T) (*store.Store, *sql.DB, int64) {
 		if latency != nil && *latency > 0 && random.Intn(4) != 0 {
 			ttft := *latency / int64(2+random.Intn(5))
 			event.TTFTMS = &ttft
+		}
+		// Ingestion keeps negative timings. The raw timeline and latency ranks skip them while
+		// summary counts take every nonzero latency, so the rollups must keep both totals.
+		if index%23 == 0 && latency != nil && *latency > 0 {
+			negative := -*latency
+			event.LatencyMS = &negative
+		}
+		if index%29 == 0 && event.TTFTMS != nil {
+			negative := -*event.TTFTMS
+			event.TTFTMS = &negative
 		}
 		if event.Failed {
 			event.FailStatusCode = []int{429, 500, 0}[random.Intn(3)]

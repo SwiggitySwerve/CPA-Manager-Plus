@@ -447,14 +447,15 @@ func analyticsTimelineFromPricingRows(rows []store.UsagePricingHourlyRow, granul
 			CachedTokens:        row.CachedTokens,
 			CacheReadTokens:     row.CacheReadTokens,
 			CacheCreationTokens: row.CacheCreationTokens,
-			LatencySamples:      row.LatencySamples,
+			// The raw timeline averages positive latencies only.
+			LatencySamples: row.PositiveLatencySamples,
 		}
 		if row.Failed {
 			point.Failure = row.Calls
 		} else {
 			point.Success = row.Calls
 		}
-		addAnalyticsTimelinePoint(grouped, point, row.LatencySumMS)
+		addAnalyticsTimelinePoint(grouped, point, row.PositiveLatencySumMS)
 	}
 	return sortedAnalyticsTimeline(grouped)
 }

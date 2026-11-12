@@ -26,9 +26,10 @@ const (
 	// hourlyProviderTable holds the hourly rows split further by the event's provider and
 	// auth provider snapshot, so a provider filter can be answered from stored rows.
 	hourlyProviderTable = "usage_pricing_hourly_provider_rollups_v1"
-	// layoutRevision names the tables one pricing revision fills. A database whose stored
-	// revision lacks it rebuilds once, which is how hourlyProviderTable gets its history.
-	layoutRevision = "provider-1"
+	// layoutRevision names the tables and columns one pricing revision fills. A database
+	// whose stored revision lacks it rebuilds once, which is how hourlyProviderTable and the
+	// positive latency columns get their history.
+	layoutRevision = "provider-2"
 )
 
 var ErrUnsupportedSchema = errors.New("unsupported usage pricing rollup schema")
@@ -107,6 +108,11 @@ type HourlyRow struct {
 	LatencySumMS        int64
 	LatencySamples      int64
 	ZeroTokenCalls      int64
+	// PositiveLatencySumMS and PositiveLatencySamples count only latencies above zero,
+	// as the raw analytics timeline does. LatencySumMS and LatencySamples count every
+	// nonzero latency, as the core aggregate and the raw summary do.
+	PositiveLatencySumMS   int64
+	PositiveLatencySamples int64
 }
 
 type AccountRow struct {
@@ -642,7 +648,8 @@ func upsertHourlyTableBatch(ctx context.Context, tx *sql.Tx, source, revision st
 		cache_read_tokens, cache_creation_tokens,
 		long_input_tokens, long_output_tokens, long_cached_tokens,
 		long_cache_read_tokens, long_cache_creation_tokens,
-		total_tokens, latency_sum_ms, latency_samples, zero_token_calls, updated_at_ms
+		total_tokens, latency_sum_ms, latency_samples, zero_token_calls,
+		positive_latency_sum_ms, positive_latency_samples, updated_at_ms
 	)
 	select
 		?,
@@ -670,6 +677,8 @@ func upsertHourlyTableBatch(ctx context.Context, tx *sql.Tx, source, revision st
 		coalesce(sum(case when latency_ms is not null and latency_ms != 0 then latency_ms else 0 end), 0),
 		count(nullif(latency_ms, 0)),
 		coalesce(sum(case when total_tokens = 0 and failed = 0 then 1 else 0 end), 0),
+		coalesce(sum(case when latency_ms > 0 then latency_ms else 0 end), 0),
+		count(case when latency_ms > 0 then 1 end),
 		?
 	from banded_events
 	group by 2, 3, 4, 5, 6, 7, 8%[6]s
@@ -693,6 +702,8 @@ func upsertHourlyTableBatch(ctx context.Context, tx *sql.Tx, source, revision st
 		latency_sum_ms = %[1]s.latency_sum_ms + excluded.latency_sum_ms,
 		latency_samples = %[1]s.latency_samples + excluded.latency_samples,
 		zero_token_calls = %[1]s.zero_token_calls + excluded.zero_token_calls,
+		positive_latency_sum_ms = %[1]s.positive_latency_sum_ms + excluded.positive_latency_sum_ms,
+		positive_latency_samples = %[1]s.positive_latency_samples + excluded.positive_latency_samples,
 		updated_at_ms = excluded.updated_at_ms`,
 		table, hourMS, usage.LongContextInputTokenThreshold, keyColumns, keyValues, keyGroup,
 	)
@@ -890,7 +901,8 @@ func mergeStoredHourlyRows(
 		sum(cached_tokens), sum(cache_read_tokens), sum(cache_creation_tokens),
 		sum(long_input_tokens), sum(long_output_tokens), sum(long_cached_tokens),
 		sum(long_cache_read_tokens), sum(long_cache_creation_tokens),
-		sum(total_tokens), sum(latency_sum_ms), sum(latency_samples), sum(zero_token_calls)
+		sum(total_tokens), sum(latency_sum_ms), sum(latency_samples), sum(zero_token_calls),
+		sum(positive_latency_sum_ms), sum(positive_latency_samples)
 	from %s
 	where %s
 	group by 1, 2, 3, 4, 5, 6, 7
@@ -979,7 +991,9 @@ func hourlyStatementFromEvents(filter HourlyFilter, fromMS, toMS, afterID int64,
 		coalesce(sum(total_tokens), 0),
 		coalesce(sum(case when latency_ms is not null and latency_ms != 0 then latency_ms else 0 end), 0),
 		count(nullif(latency_ms, 0)),
-		coalesce(sum(case when total_tokens = 0 and failed = 0 then 1 else 0 end), 0)
+		coalesce(sum(case when total_tokens = 0 and failed = 0 then 1 else 0 end), 0),
+		coalesce(sum(case when latency_ms > 0 then latency_ms else 0 end), 0),
+		count(case when latency_ms > 0 then 1 end)
 	from banded_events
 	group by 1, 2, 3, 4, 5, 6, 7
 	order by 1, 2, 3, 4, 5, 6, 7`,
@@ -1021,6 +1035,8 @@ func scanAndMergeHourlyRows(rows *sql.Rows, grouped map[hourlyKey]*HourlyRow) er
 			&row.LatencySumMS,
 			&row.LatencySamples,
 			&row.ZeroTokenCalls,
+			&row.PositiveLatencySumMS,
+			&row.PositiveLatencySamples,
 		); err != nil {
 			return err
 		}
@@ -1062,6 +1078,8 @@ func mergeHourlyRow(grouped map[hourlyKey]*HourlyRow, row HourlyRow) {
 	entry.LatencySumMS += row.LatencySumMS
 	entry.LatencySamples += row.LatencySamples
 	entry.ZeroTokenCalls += row.ZeroTokenCalls
+	entry.PositiveLatencySumMS += row.PositiveLatencySumMS
+	entry.PositiveLatencySamples += row.PositiveLatencySamples
 }
 
 func sortedHourlyRows(grouped map[hourlyKey]*HourlyRow) []HourlyRow {
