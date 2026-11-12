@@ -299,7 +299,8 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 	return result, nil
 }
 
-// pricingRowLess orders rows that share a bucket or a call count by the rest of their key.
+// pricingRowLess orders rows that share a bucket or a call count by the rest of their key,
+// in the order the hourly reader returns them, so a rollup-served response is unchanged.
 func pricingRowLess(leftModel, rightModel, leftBilling, rightBilling, leftTier, rightTier string, leftBand, rightBand usage.PricingBand) bool {
 	if leftModel != rightModel {
 		return leftModel < rightModel
@@ -307,11 +308,11 @@ func pricingRowLess(leftModel, rightModel, leftBilling, rightBilling, leftTier, 
 	if leftBilling != rightBilling {
 		return leftBilling < rightBilling
 	}
-	if leftTier != rightTier {
-		return leftTier < rightTier
-	}
 	if leftBand.PricingModel != rightBand.PricingModel {
 		return leftBand.PricingModel < rightBand.PricingModel
+	}
+	if leftTier != rightTier {
+		return leftTier < rightTier
 	}
 	return leftBand.ContextThresholdTokens < rightBand.ContextThresholdTokens
 }

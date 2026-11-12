@@ -23,11 +23,11 @@ const (
 	hourMS        = int64(time.Hour / time.Millisecond)
 
 	hourlyTable = "usage_pricing_hourly_rollups_v1"
-	// HourlyProviderTable holds the hourly rows split further by the event's provider and
+	// hourlyProviderTable holds the hourly rows split further by the event's provider and
 	// auth provider snapshot, so a provider filter can be answered from stored rows.
-	HourlyProviderTable = "usage_pricing_hourly_provider_rollups_v1"
+	hourlyProviderTable = "usage_pricing_hourly_provider_rollups_v1"
 	// layoutRevision names the tables one pricing revision fills. A database whose stored
-	// revision lacks it rebuilds once, which is how HourlyProviderTable gets its history.
+	// revision lacks it rebuilds once, which is how hourlyProviderTable gets its history.
 	layoutRevision = "provider-1"
 )
 
@@ -73,19 +73,19 @@ type CatchUpResult struct {
 }
 
 type HourlyFilter struct {
-	FromMS int64
-	ToMS   int64
-	Models []string
-	// Providers keeps events whose provider or auth provider snapshot is one of these,
-	// compared in lower case like the raw analytics filter. ByProvider reads
-	// HourlyProviderTable without narrowing it; Providers implies it.
-	Providers        []string
-	ByProvider       bool
+	FromMS           int64
+	ToMS             int64
+	Models           []string
 	IncludeFailed    bool
 	FailedOnly       bool
 	CollapseBuckets  bool
 	LeftEdgeDeleted  bool
 	RightEdgeDeleted bool
+	// Providers keeps events whose provider or auth provider snapshot is one of these,
+	// compared in lower case like the raw analytics filter. ByProvider reads the
+	// provider-keyed table without narrowing it; Providers implies it.
+	Providers  []string
+	ByProvider bool
 }
 
 type HourlyRow struct {
@@ -422,7 +422,7 @@ func clearRevisionRowsBatch(ctx context.Context, tx *sql.Tx, revision string, li
 	remaining := limit
 	for _, tableName := range []string{
 		hourlyTable,
-		HourlyProviderTable,
+		hourlyProviderTable,
 		"usage_pricing_account_rollups_v1",
 	} {
 		if remaining > 0 {
@@ -624,7 +624,7 @@ func bandedEventsFromSourceCTE(whereClause, source string) string {
 func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, source, revision string, afterID, throughID, nowMS int64) error {
 	for _, target := range []struct{ table, keyColumns, keyValues, keyGroup string }{
 		{table: hourlyTable},
-		{HourlyProviderTable, ", provider, auth_provider_snapshot", "coalesce(provider, ''), coalesce(auth_provider_snapshot, ''),", ", 9, 10"},
+		{hourlyProviderTable, ", provider, auth_provider_snapshot", "coalesce(provider, ''), coalesce(auth_provider_snapshot, ''),", ", 9, 10"},
 	} {
 		if err := upsertHourlyTableBatch(ctx, tx, source, revision, afterID, throughID, nowMS, target.table, target.keyColumns, target.keyValues, target.keyGroup); err != nil {
 			return err
@@ -877,7 +877,7 @@ func mergeStoredHourlyRows(
 	conditions, args := storedHourlyConditions(revision, filter, fromMS, toMS)
 	table := hourlyTable
 	if filter.ByProvider || len(normalizeValues(filter.Providers)) > 0 {
-		table = HourlyProviderTable
+		table = hourlyProviderTable
 	}
 	bucketExpr := "bucket_ms"
 	if filter.CollapseBuckets {

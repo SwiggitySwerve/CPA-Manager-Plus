@@ -302,7 +302,12 @@ func proxProviderRollupFixture(t *testing.T) (*store.Store, *sql.DB, int64) {
 	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
 		"shared-model": {
 			Prompt: 1, Completion: 2, Cache: 0.1,
-			ContextTiers: []store.ModelPriceContextTier{{ThresholdTokens: 100_000, Prompt: 3, PromptConfigured: true}},
+			// Two tiers give one model three pricing bands in a bucket, so the order in which
+			// bands are summed matters to the floats.
+			ContextTiers: []store.ModelPriceContextTier{
+				{ThresholdTokens: 20_000, Prompt: 2, PromptConfigured: true},
+				{ThresholdTokens: 100_000, Prompt: 3, PromptConfigured: true},
+			},
 		},
 		"claude-only": {
 			Prompt: 2, Completion: 4,

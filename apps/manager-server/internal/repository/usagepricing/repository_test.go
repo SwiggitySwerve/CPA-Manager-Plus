@@ -492,6 +492,12 @@ func TestPricingRollupRevisionRollbackDoesNotDoubleCount(t *testing.T) {
 		if err != nil || !available || len(hourlyRows) != 1 || hourlyRows[0].Calls != 1 {
 			t.Fatalf("pricing hourly rows after rollback = available:%v err:%v %#v", available, err, hourlyRows)
 		}
+		providerFilter := hourlyFilter
+		providerFilter.Providers = []string{"openai"}
+		providerRows, _, available, err := st.UsagePricingHourlyRows(ctx, providerFilter)
+		if err != nil || !available || len(providerRows) != 1 || providerRows[0].Calls != 1 {
+			t.Fatalf("pricing provider rows after rollback = available:%v err:%v %#v", available, err, providerRows)
+		}
 		accountRows, _, accountAvailable, err := st.UsagePricingAccountRows(ctx, []string{accountKey})
 		if err != nil || !accountAvailable || len(accountRows) != 1 || accountRows[0].Calls != 1 {
 			t.Fatalf("pricing account rows after rollback = available:%v err:%v %#v", accountAvailable, err, accountRows)
