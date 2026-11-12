@@ -75,20 +75,36 @@ func TestLatencyBreakdownMatchesSQLRanks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// Production scans run with the derived indexes present, so build them here too.
+	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	var indexes int
+	if err := db.QueryRow(`select count(*) from sqlite_master where name = 'idx_usage_events_ts_latency_groups_cover'`).Scan(&indexes); err != nil || indexes != 1 {
+		t.Fatalf("covering index missing: count=%d err=%v", indexes, err)
+	}
 	repo := New(db)
 	base := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
 	models := []string{"alpha", "beta", "gamma"}
+	// Reasoning suffixes collapse in AnalyticsModel; an unknown alias in parentheses stays.
+	suffixes := []string{"", "(high)", "(8192)", "(custom)"}
 	providers := []string{"claude", "codex", ""}
-	events := make([]usage.Event, 0, 300)
-	for i := 0; i < 300; i++ {
+	events := make([]usage.Event, 0, 310)
+	for i := 0; i < 310; i++ {
 		timestamp := base.Add(time.Duration(i) * time.Minute)
-		event := usage.Event{EventHash: canonicalTestHash(fmt.Sprint("pair", i)), TimestampMS: timestamp.UnixMilli(), Timestamp: timestamp.Format(time.RFC3339Nano), Model: models[i%3], Provider: providers[(i/3)%3], CreatedAtMS: timestamp.UnixMilli()}
+		model := models[i%3] + suffixes[(i/3)%4]
+		event := usage.Event{EventHash: canonicalTestHash(fmt.Sprint("pair", i)), TimestampMS: timestamp.UnixMilli(), Timestamp: timestamp.Format(time.RFC3339Nano), Model: model, Provider: providers[(i/3)%3], CreatedAtMS: timestamp.UnixMilli()}
 		// The provider snapshot wins over the event provider, and requested models alias.
 		if i%5 == 0 {
 			event.AuthProviderSnapshot = "snapshot"
 		}
 		if i%4 == 0 {
-			event.RequestedModel = "requested-" + models[i%3]
+			event.RequestedModel = "requested-" + model
+		}
+		// Only suffixed alpha rows carry this provider, so a pair that skips the
+		// suffix collapse cannot list it under "alpha".
+		if i >= 300 {
+			event.Model, event.RequestedModel, event.Provider, event.AuthProviderSnapshot = "alpha(high)", "", "suffix-only", ""
 		}
 		if i%11 != 0 {
 			latency := int64((i * 37) % 500)
@@ -115,8 +131,16 @@ func TestLatencyBreakdownMatchesSQLRanks(t *testing.T) {
 	if breakdown.Overall.P95LatencyMS != summary.P95LatencyMS || breakdown.Overall.P95TTFTMS != summary.P95TTFTMS {
 		t.Fatalf("overall %#v differs from summary %#v", breakdown.Overall, summary)
 	}
-	if got := breakdown.ModelProviders["alpha"]; !reflect.DeepEqual(got, []string{"", "claude", "codex", "snapshot"}) {
+	if got := breakdown.ModelProviders["alpha"]; !reflect.DeepEqual(got, []string{"", "claude", "codex", "snapshot", "suffix-only"}) {
 		t.Fatalf("alpha providers = %#v", got)
+	}
+	for _, model := range []string{"alpha(high)", "alpha(8192)", "requested-alpha(high)"} {
+		if _, ok := breakdown.ModelProviders[model]; ok {
+			t.Fatalf("model %q kept its reasoning suffix", model)
+		}
+	}
+	if _, ok := breakdown.ModelProviders["beta(custom)"]; !ok {
+		t.Fatalf("unknown alias suffix was collapsed: %#v", breakdown.ModelProviders)
 	}
 	for dimension, actual := range map[string][]GroupedLatency{"model": breakdown.Models, "provider": breakdown.Providers} {
 		expected, err := repo.GroupedLatencyWithFilter(context.Background(), filter, dimension, "day", nil)

@@ -129,6 +129,9 @@ var derivedIndexStatements = []struct {
 }{
 	{"idx_usage_events_timestamp", "usage_events", `create index if not exists idx_usage_events_timestamp on usage_events(timestamp_ms)`},
 	{"idx_usage_events_ts_latency_ttft_cover", "usage_events", `create index if not exists idx_usage_events_ts_latency_ttft_cover on usage_events(timestamp_ms, latency_ms, ttft_ms)`},
+	// Covers every column LatencyBreakdownWithFilter reads (and the failed, provider and
+	// model filters), so the raw percentile scan never touches the wide usage_events rows.
+	{"idx_usage_events_ts_latency_groups_cover", "usage_events", `create index if not exists idx_usage_events_ts_latency_groups_cover on usage_events(timestamp_ms, latency_ms, ttft_ms, model, requested_model, auth_provider_snapshot, provider, failed)`},
 	{"idx_usage_events_request_id", "usage_events", `create index if not exists idx_usage_events_request_id on usage_events(request_id)`},
 	{"idx_usage_events_model", "usage_events", `create index if not exists idx_usage_events_model on usage_events(model)`},
 	{"idx_usage_events_auth_index", "usage_events", `create index if not exists idx_usage_events_auth_index on usage_events(auth_index)`},

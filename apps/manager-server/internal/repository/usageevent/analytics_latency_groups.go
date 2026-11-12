@@ -126,37 +126,47 @@ func (r *repository) LatencyBreakdownWithFilter(ctx context.Context, filter Anal
 	if location == nil {
 		location = time.UTC
 	}
-	where, args := analyticsWhere(filter)
-	query := `select timestamp_ms, ` + usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model") + `, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), latency_ms, ttft_ms from usage_events ` + where
+	query, args := latencyBreakdownQuery(filter)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return LatencyBreakdown{}, err
 	}
 	defer rows.Close()
-	overall := map[string]*latencySamples{"": {}}
+	overallGroup := &latencySamples{}
+	overall := map[string]*latencySamples{"": overallGroup}
 	byBucket, byModel, byProvider := map[string]*latencySamples{}, map[string]*latencySamples{}, map[string]*latencySamples{}
 	pairs := map[string]map[string]bool{}
+	// A request has few distinct model/provider pairs and consecutive rows share a bucket,
+	// so resolve each pair's groups once and reuse the last bucket instead of hashing
+	// and formatting every row.
+	type pairGroups struct{ model, provider *latencySamples }
+	resolved := map[[2]string]pairGroups{}
+	var bucketGroup *latencySamples
+	var bucketMS int64
 	for rows.Next() {
 		var timestampMS int64
-		var model, provider string
+		var effectiveModel, provider string
 		var latency, ttft sql.NullFloat64
-		if err := rows.Scan(&timestampMS, &model, &provider, &latency, &ttft); err != nil {
+		if err := rows.Scan(&timestampMS, &effectiveModel, &provider, &latency, &ttft); err != nil {
 			return LatencyBreakdown{}, err
 		}
-		bucket := strconv.FormatInt(usage.AnalyticsBucketMS(timestampMS, granularity, location), 10)
-		if pairs[model] == nil {
-			pairs[model] = map[string]bool{}
+		if next := usage.AnalyticsBucketMS(timestampMS, granularity, location); bucketGroup == nil || next != bucketMS {
+			bucketMS = next
+			bucketGroup = latencyGroup(byBucket, strconv.FormatInt(bucketMS, 10))
 		}
-		pairs[model][provider] = true
-		for _, entry := range []struct {
-			groups map[string]*latencySamples
-			key    string
-		}{{overall, ""}, {byBucket, bucket}, {byModel, model}, {byProvider, provider}} {
-			group := entry.groups[entry.key]
-			if group == nil {
-				group = &latencySamples{}
-				entry.groups[entry.key] = group
+		groups, ok := resolved[[2]string{effectiveModel, provider}]
+		if !ok {
+			// The query returns the effective requested model; normalizing it here, once per
+			// distinct value, replaces a SQLite-to-Go function call on every row.
+			model := usageidentity.AnalyticsModel(effectiveModel)
+			groups = pairGroups{latencyGroup(byModel, model), latencyGroup(byProvider, provider)}
+			resolved[[2]string{effectiveModel, provider}] = groups
+			if pairs[model] == nil {
+				pairs[model] = map[string]bool{}
 			}
+			pairs[model][provider] = true
+		}
+		for _, group := range [4]*latencySamples{overallGroup, bucketGroup, groups.model, groups.provider} {
 			if latency.Valid && latency.Float64 > 0 {
 				group.latency = append(group.latency, latency.Float64)
 			}
@@ -184,7 +194,67 @@ func (r *repository) LatencyBreakdownWithFilter(ctx context.Context, filter Anal
 	return result, nil
 }
 
+// latencyBreakdownQuery reads only columns held by idx_usage_events_ts_latency_groups_cover.
+func latencyBreakdownQuery(filter AnalyticsFilter) (string, []any) {
+	where, args := analyticsWhere(filter)
+	return `select timestamp_ms, ` + usageidentity.SQLEffectiveRequestedModelExpression("model", "requested_model") + `, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), latency_ms, ttft_ms from usage_events ` + where, args
+}
+
 type latencySamples struct{ latency, ttft []float64 }
+
+func latencyGroup(groups map[string]*latencySamples, key string) *latencySamples {
+	group := groups[key]
+	if group == nil {
+		group = &latencySamples{}
+		groups[key] = group
+	}
+	return group
+}
+
+// nearestRank returns the value a full sort would place at ((n*95)+99)/100 counted from
+// one, by quickselect: ranking only needs that one value, and the sort of every sample
+// per group was the largest remaining cost of a 30-day view. It reorders values.
+func nearestRank(values []float64) float64 {
+	k := (len(values)*95+99)/100 - 1
+	lo, hi := 0, len(values)-1
+	for lo < hi {
+		pivot := medianOfThree(values[lo], values[lo+(hi-lo)/2], values[hi])
+		// Three-way partition keeps duplicate-heavy latency samples linear.
+		below, i, above := lo, lo, hi
+		for i <= above {
+			switch {
+			case values[i] < pivot:
+				values[below], values[i] = values[i], values[below]
+				below++
+				i++
+			case values[i] > pivot:
+				values[i], values[above] = values[above], values[i]
+				above--
+			default:
+				i++
+			}
+		}
+		switch {
+		case k < below:
+			hi = below - 1
+		case k > above:
+			lo = above + 1
+		default:
+			return pivot
+		}
+	}
+	return values[k]
+}
+
+func medianOfThree(a, b, c float64) float64 {
+	if a > b {
+		a, b = b, a
+	}
+	if b > c {
+		b = c
+	}
+	return max(a, b)
+}
 
 // rankLatencyGroups applies GroupedLatencyWithFilter's nearest rank,
 // ((count*95)+99)/100 counted from one, and its arithmetic mean of latency.
@@ -196,10 +266,6 @@ func rankLatencyGroups(groups map[string]*latencySamples) []GroupedLatency {
 		}
 	}
 	sort.Strings(keys)
-	nearest := func(values []float64) float64 {
-		sort.Float64s(values)
-		return values[(len(values)*95+99)/100-1]
-	}
 	result := make([]GroupedLatency, 0, len(keys))
 	for _, key := range keys {
 		group := groups[key]
@@ -210,10 +276,10 @@ func rankLatencyGroups(groups map[string]*latencySamples) []GroupedLatency {
 				sum += value
 			}
 			row.AverageLatencyMS = sql.NullFloat64{Float64: sum / float64(len(group.latency)), Valid: true}
-			row.P95LatencyMS = sql.NullFloat64{Float64: nearest(group.latency), Valid: true}
+			row.P95LatencyMS = sql.NullFloat64{Float64: nearestRank(group.latency), Valid: true}
 		}
 		if len(group.ttft) > 0 {
-			row.P95TTFTMS = sql.NullFloat64{Float64: nearest(group.ttft), Valid: true}
+			row.P95TTFTMS = sql.NullFloat64{Float64: nearestRank(group.ttft), Valid: true}
 		}
 		result = append(result, row)
 	}
