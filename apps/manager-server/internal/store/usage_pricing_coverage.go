@@ -1,6 +1,9 @@
 package store
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 var ErrUsagePricingCoverageIncomplete = errors.New("usage pricing coverage is incomplete")
 var ErrUsagePricingRecoveryFailed = errors.New("usage pricing recovery failed")
@@ -59,6 +62,45 @@ func hourlyPricingCoverageMatches(core []UsageHourlyAggregateRow, prices []Usage
 		}
 	}
 	return true
+}
+
+// hourlyAggregateRowsFromPricing gives provider-filtered pricing rows the shape of the core
+// rows they refine. Only stores that passed hourlyPricingCoverageMatches unfiltered may use
+// it: the pricing rows then carry every core metric, split by pricing band and provider.
+func hourlyAggregateRowsFromPricing(prices []UsagePricingHourlyRow) []UsageHourlyAggregateRow {
+	rows := make([]UsageHourlyAggregateRow, 0, len(prices))
+	for _, row := range prices {
+		rows = append(rows, UsageHourlyAggregateRow{
+			LongContextTokens:   row.LongContextTokens,
+			BucketMS:            row.BucketMS,
+			Model:               row.Model,
+			BillingModel:        row.BillingModel,
+			ServiceTier:         row.ServiceTier,
+			Failed:              row.Failed,
+			Calls:               row.Calls,
+			InputTokens:         row.InputTokens,
+			OutputTokens:        row.OutputTokens,
+			ReasoningTokens:     row.ReasoningTokens,
+			CachedTokens:        row.CachedTokens,
+			CacheReadTokens:     row.CacheReadTokens,
+			CacheCreationTokens: row.CacheCreationTokens,
+			TotalTokens:         row.TotalTokens,
+			LatencySumMS:        row.LatencySumMS,
+			LatencySamples:      row.LatencySamples,
+			ZeroTokenCalls:      row.ZeroTokenCalls,
+		})
+	}
+	return rows
+}
+
+// hasFilterValue reports whether a filter list narrows anything; blank entries do not.
+func hasFilterValue(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type accountPricingCoverageKey struct {

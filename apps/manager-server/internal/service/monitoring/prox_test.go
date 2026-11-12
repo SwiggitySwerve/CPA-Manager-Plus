@@ -123,9 +123,9 @@ func TestProxQueryBoundsAndCancelledAdmission(t *testing.T) {
 	}
 }
 
-// Cold provider and search views scan raw rows for up to the 30-second deadline. Two of
-// them hold both general slots; a view the hourly rollups serve must still be admitted,
-// and a slow one must still queue.
+// Cold search views scan raw rows for up to the 30-second deadline. Two of them hold both
+// general slots; a view the hourly rollups serve, provider-filtered or not, must still be
+// admitted, and a slow one must still queue.
 func TestProxFastQueryIsAdmittedWhileSlowQueriesHoldGeneralSlots(t *testing.T) {
 	base := ProxAnalyticsQuery{FromMS: 1, ToMS: 1000, TimeZone: "UTC", Granularity: "hour", Outcome: "all"}
 	provider, search, model := base, base, base
@@ -138,7 +138,7 @@ func TestProxFastQueryIsAdmittedWhileSlowQueriesHoldGeneralSlots(t *testing.T) {
 	}{
 		"unfiltered":                   {base, false, true, 2},
 		"model filter":                 {model, false, true, 2},
-		"provider waits":               {provider, false, false, 2},
+		"provider filter":              {provider, false, true, 2},
 		"search waits":                 {search, false, false, 2},
 		"fast falls back to a general": {base, true, true, 1},
 		"fast waits when all held":     {base, true, false, 2},

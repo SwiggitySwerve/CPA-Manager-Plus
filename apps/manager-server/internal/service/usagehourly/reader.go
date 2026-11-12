@@ -107,12 +107,12 @@ func (r *Reader) LoadAnalytics(
 	return r.loadRows(ctx, filter, false, analyticsTimelineReady, edges)
 }
 
-// SupportsAnalyticsFilter reports whether the permanent hourly aggregate
-// persists every dimension required by the supplied analytics filter.
+// SupportsAnalyticsFilter reports whether the hourly rollups persist every
+// dimension required by the supplied analytics filter. The provider dimension
+// is held by the pricing rollup only; the store derives the core rows from it.
 func SupportsAnalyticsFilter(filter store.AnalyticsFilter) bool {
 	return strings.TrimSpace(filter.SearchQuery) == "" &&
 		strings.TrimSpace(filter.SearchAPIKeyHash) == "" &&
-		len(filter.Providers) == 0 &&
 		len(filter.Accounts) == 0 &&
 		len(filter.CredentialIDs) == 0 &&
 		len(filter.AuthFiles) == 0 &&
@@ -158,6 +158,7 @@ func (r *Reader) loadRows(ctx context.Context, filter store.AnalyticsFilter, das
 		FromMS:           filter.FromMS,
 		ToMS:             filter.ToMS,
 		Models:           filter.Models,
+		Providers:        filter.Providers,
 		IncludeFailed:    filter.IncludeFailed,
 		FailedOnly:       filter.FailedOnly,
 		CollapseBuckets:  !dashboardTimelineReady && !analyticsTimelineReady,

@@ -156,6 +156,22 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 		result.FilterOptions.Models = append(result.FilterOptions.Models, source.FilterOptions.Models...)
 		result.FilterOptions.Providers = append(result.FilterOptions.Providers, source.FilterOptions.Providers...)
 	}
+	// Rollups, the projection and a raw scan return the same rows in different orders. Cost
+	// estimates add floats and list reasons in row order, so fix the order before combining.
+	sort.SliceStable(source.pricingStats, func(i, j int) bool {
+		left, right := source.pricingStats[i], source.pricingStats[j]
+		if left.Calls != right.Calls {
+			return left.Calls > right.Calls
+		}
+		return pricingRowLess(left.Model, right.Model, left.BillingModel, right.BillingModel, left.ServiceTier, right.ServiceTier, left.PricingBand, right.PricingBand)
+	})
+	sort.SliceStable(source.pricingTimeline, func(i, j int) bool {
+		left, right := source.pricingTimeline[i], source.pricingTimeline[j]
+		if left.BucketMS != right.BucketMS {
+			return left.BucketMS < right.BucketMS
+		}
+		return pricingRowLess(left.Model, right.Model, left.BillingModel, right.BillingModel, left.ServiceTier, right.ServiceTier, left.PricingBand, right.PricingBand)
+	})
 	summary := source.Summary
 	result.Summary = metricsFromStats(source.pricingStats, prices)
 	result.Summary.Calls = summary.TotalCalls
@@ -281,6 +297,23 @@ func (s *Service) proxAnalytics(ctx context.Context, q ProxAnalyticsQuery, force
 		}
 	}
 	return result, nil
+}
+
+// pricingRowLess orders rows that share a bucket or a call count by the rest of their key.
+func pricingRowLess(leftModel, rightModel, leftBilling, rightBilling, leftTier, rightTier string, leftBand, rightBand usage.PricingBand) bool {
+	if leftModel != rightModel {
+		return leftModel < rightModel
+	}
+	if leftBilling != rightBilling {
+		return leftBilling < rightBilling
+	}
+	if leftTier != rightTier {
+		return leftTier < rightTier
+	}
+	if leftBand.PricingModel != rightBand.PricingModel {
+		return leftBand.PricingModel < rightBand.PricingModel
+	}
+	return leftBand.ContextThresholdTokens < rightBand.ContextThresholdTokens
 }
 
 func sortedAnalyticsKeys(groups map[string][]store.ModelStat) []string {

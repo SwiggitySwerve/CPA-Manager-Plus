@@ -42,6 +42,7 @@ const (
 
 	usageAccountModelRollupsTable   = "usage_account_model_rollups"
 	usagePricingAccountRollupsTable = "usage_pricing_account_rollups_v1"
+	usagePricingHourlyProviderTable = "usage_pricing_hourly_provider_rollups_v1"
 	usageAccountModelRollupsLegacy  = "usage_account_model_rollups_legacy_v1120_rc2"
 	// Keep the unsuffixed identity-v3 name for cleanup of databases migrated by
 	// the previous identity revision. New Codex identity rebuilds use a
@@ -354,6 +355,41 @@ func Migrate(db *sql.DB) error {
 			primary key (
 				structure_revision, bucket_ms, model, billing_model, pricing_model,
 				service_tier, context_threshold_tokens, failed
+			)
+		)`,
+		// The hourly pricing rows split by provider and auth provider snapshot. Its primary
+		// key leads with the revision and bucket every read ranges over.
+		`create table if not exists usage_pricing_hourly_provider_rollups_v1 (
+			structure_revision text not null,
+			bucket_ms integer not null,
+			model text not null,
+			billing_model text not null,
+			pricing_model text not null,
+			service_tier text not null,
+			context_threshold_tokens integer not null,
+			failed integer not null,
+			provider text not null,
+			auth_provider_snapshot text not null,
+			calls integer not null default 0,
+			input_tokens integer not null default 0,
+			output_tokens integer not null default 0,
+			reasoning_tokens integer not null default 0,
+			cached_tokens integer not null default 0,
+			cache_read_tokens integer not null default 0,
+			cache_creation_tokens integer not null default 0,
+			long_input_tokens integer not null default 0,
+			long_output_tokens integer not null default 0,
+			long_cached_tokens integer not null default 0,
+			long_cache_read_tokens integer not null default 0,
+			long_cache_creation_tokens integer not null default 0,
+			total_tokens integer not null default 0,
+			latency_sum_ms integer not null default 0,
+			latency_samples integer not null default 0,
+			zero_token_calls integer not null default 0,
+			updated_at_ms integer not null,
+			primary key (
+				structure_revision, bucket_ms, model, billing_model, pricing_model,
+				service_tier, context_threshold_tokens, failed, provider, auth_provider_snapshot
 			)
 		)`,
 		createUsagePricingAccountRollupsTable,
@@ -1563,6 +1599,7 @@ func resetUsageDerivedDataWithoutSource(db *sql.DB, snapshot usageMonitoringMigr
 		"usage_account_model_rollups",
 		"usage_dashboard_hourly_rollups",
 		"usage_pricing_hourly_rollups_v1",
+		usagePricingHourlyProviderTable,
 		"usage_pricing_account_rollups_v1",
 		"usage_cache_accounting_v2_changes",
 		"usage_rollup_checkpoints",
@@ -1619,6 +1656,10 @@ func resetUsageDerivedDataWithoutSource(db *sql.DB, snapshot usageMonitoringMigr
 		}
 	}
 	statements := make([]string, 0, len(existingTables))
+	if present[usagePricingHourlyProviderTable] {
+		// Its rows repeat the hourly table parked above, so they are dropped, not kept.
+		statements = append(statements, `delete from `+usagePricingHourlyProviderTable)
+	}
 	if present["usage_rollup_checkpoints"] {
 		statements = append(statements, `delete from usage_rollup_checkpoints
 			where name in ('account_history', 'dashboard_hourly')`)

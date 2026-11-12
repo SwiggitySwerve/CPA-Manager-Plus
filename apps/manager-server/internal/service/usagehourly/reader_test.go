@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -170,7 +171,7 @@ func TestReaderRejectsUnsupportedAnalyticsFilters(t *testing.T) {
 	filter := store.AnalyticsFilter{
 		FromMS:        int64(1_800_000_000_000),
 		ToMS:          int64(1_800_000_000_000) + 2*hourMS,
-		Providers:     []string{"codex"},
+		Accounts:      []string{"codex"},
 		IncludeFailed: true,
 	}
 	if SupportsAnalyticsFilter(filter) {
@@ -448,4 +449,164 @@ func TestReaderClassifiesSnapshotErrors(t *testing.T) {
 			t.Fatalf("recovery failure must not be classified as ErrUsagePricingCoverageIncomplete: %v", snapshot.ReadError)
 		}
 	})
+}
+
+// A provider filter is the raw analytics predicate: either the provider or the auth
+// provider snapshot matches, in lower case. The provider-keyed rollup must return exactly
+// what a raw scan with that filter returns, through stored rows, the raw tail past the
+// rollup's coverage, and both partial-hour edges.
+func TestReaderProviderFilterMatchesRawEvents(t *testing.T) {
+	db, sqlDB := newReaderTestStoreWithDB(t)
+	ctx := context.Background()
+	fromMS := int64(1_800_000_000_000) + 15*60*1000
+	toMS := fromMS + 4*hourMS + 20*60*1000
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{"shared": {
+		Prompt:       1,
+		Completion:   2,
+		ContextTiers: []store.ModelPriceContextTier{{ThresholdTokens: 1_000, Prompt: 3, PromptConfigured: true}},
+	}}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	pairs := [][2]string{{"claude", "claude"}, {"codex", "codex"}, {"claude", ""}, {"", "CODEX"}, {"gemini", "claude"}, {"", ""}}
+	latency := []int64{0, 120, 950}
+	events := []usage.Event{}
+	// One event every seven minutes: every pair lands in the left edge, the full hours and
+	// the right edge, on both sides of the context tier.
+	for index, at := 0, fromMS+60_000; at < toMS; index, at = index+1, at+7*60_000 {
+		pair := pairs[index%len(pairs)]
+		event := readerEvent("provider-"+strconv.Itoa(index), at, []string{"shared", "codex-only"}[index%2], index%5 == 0, int64(400+index*90), int64(10+index), &latency[index%len(latency)])
+		event.Provider, event.AuthProviderSnapshot = pair[0], pair[1]
+		events = append(events, event)
+	}
+	covered := len(events) - 3
+	if _, err := db.InsertEvents(ctx, events[:covered]); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	catchUpReaderRollup(t, ctx, db)
+	// The last events stay past the rollup's coverage.
+	if _, err := db.InsertEvents(ctx, events[covered:]); err != nil {
+		t.Fatalf("insert tail events: %v", err)
+	}
+	for {
+		result, err := db.CatchUpUsageHourlyAggregate(ctx, 100, time.Now().UnixMilli())
+		if err != nil {
+			t.Fatalf("catch up core aggregate: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+
+	reader := New(db, true)
+	assertMatchesRaw := func(t *testing.T, filter store.AnalyticsFilter) Snapshot {
+		t.Helper()
+		rawAggregate, err := db.AggregateWithFilter(ctx, filter)
+		if err != nil {
+			t.Fatalf("raw aggregate: %v", err)
+		}
+		rawModels, err := db.ModelStatsWithFilter(ctx, filter, 0)
+		if err != nil {
+			t.Fatalf("raw models: %v", err)
+		}
+		rawTimeline, err := db.TimelineWithFilter(ctx, filter, "hour", time.UTC)
+		if err != nil {
+			t.Fatalf("raw timeline: %v", err)
+		}
+		snapshot, ok := reader.LoadAnalytics(ctx, filter, "hour", time.UTC, true)
+		if !ok {
+			t.Fatalf("reader did not serve the provider filter: %v", snapshot.ReadError)
+		}
+		// The raw filtered aggregate reports the average latency but not its sample count.
+		aggregate := snapshot.Aggregate
+		aggregate.LatencySamples = 0
+		if !reflect.DeepEqual(aggregate, rawAggregate) {
+			t.Fatalf("aggregate mismatch\nrollup=%#v\nraw=%#v", aggregate, rawAggregate)
+		}
+		if !reflect.DeepEqual(snapshot.ModelStats, rawModels) {
+			t.Fatalf("model stats mismatch\nrollup=%#v\nraw=%#v", snapshot.ModelStats, rawModels)
+		}
+		timeline, ok := reader.AnalyticsTimeline(ctx, snapshot, "hour", time.UTC)
+		sortTimelinePoints(timeline)
+		sortTimelinePoints(rawTimeline)
+		if !ok || !reflect.DeepEqual(timeline, rawTimeline) {
+			t.Fatalf("timeline mismatch\nrollup=%#v\nraw=%#v", timeline, rawTimeline)
+		}
+		return snapshot
+	}
+	filters := map[string]store.AnalyticsFilter{}
+	for name, providers := range map[string][]string{
+		"claude":         {"claude"},
+		"upper case":     {" CODEX "},
+		"two providers":  {"claude", "codex"},
+		"provider only":  {"gemini"},
+		"no such":        {"nobody"},
+		"blank is unset": {"  "},
+	} {
+		filters[name] = store.AnalyticsFilter{FromMS: fromMS, ToMS: toMS, IncludeFailed: true, Providers: providers}
+	}
+	withModel := filters["claude"]
+	withModel.Models = []string{"shared"}
+	filters["claude and model"] = withModel
+	failedOnly := filters["two providers"]
+	failedOnly.FailedOnly = true
+	filters["failed only"] = failedOnly
+	successOnly := filters["upper case"]
+	successOnly.IncludeFailed = false
+	filters["success only"] = successOnly
+	calls := map[string]int64{}
+	for name, filter := range filters {
+		t.Run(name, func(t *testing.T) {
+			calls[name] = assertMatchesRaw(t, filter).Aggregate.TotalCalls
+		})
+	}
+	if calls["claude"] == 0 || calls["upper case"] == 0 || calls["provider only"] == 0 || calls["no such"] != 0 ||
+		calls["blank is unset"] != int64(len(events)) || calls["claude"] == calls["two providers"] {
+		t.Fatalf("filters did not select distinct event sets: %v", calls)
+	}
+
+	// The stored provider rows are what a provider view reads: a change made to one of them
+	// and to the core row it refines shows up, and only for that provider.
+	bucketMS := fromMS - fromMS%hourMS + 2*hourMS
+	for _, statement := range []string{
+		`update usage_hourly_aggregate_v1 set calls = calls + 1000 where rowid = (
+			select rowid from usage_hourly_aggregate_v1 where bucket_ms = ? and model = 'codex-only' and failed = 0 limit 1)`,
+		`update usage_pricing_hourly_provider_rollups_v1 set calls = calls + 1000 where rowid = (
+			select rowid from usage_pricing_hourly_provider_rollups_v1
+			where bucket_ms = ? and model = 'codex-only' and failed = 0 and auth_provider_snapshot = 'codex' limit 1)`,
+	} {
+		result, err := sqlDB.ExecContext(ctx, statement, bucketMS)
+		if err != nil {
+			t.Fatalf("mark stored rows: %v", err)
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			t.Fatalf("marked %d rows with %s", changed, statement)
+		}
+	}
+	for provider, want := range map[string]int64{"codex": calls["upper case"] + 1000, "claude": calls["claude"]} {
+		snapshot, ok := reader.LoadAnalytics(ctx, store.AnalyticsFilter{FromMS: fromMS, ToMS: toMS, IncludeFailed: true, Providers: []string{provider}}, "hour", time.UTC, true)
+		if !ok || snapshot.Aggregate.TotalCalls != want {
+			t.Fatalf("%s calls from stored rows = %d (ok=%v), want %d", provider, snapshot.Aggregate.TotalCalls, ok, want)
+		}
+	}
+
+	// Provider rows that no longer add up to the core aggregate are not served, whichever
+	// provider is asked for: the view is recomputed from events and still matches a raw scan.
+	if _, err := sqlDB.ExecContext(ctx, `update usage_hourly_aggregate_v1 set calls = calls - 1000 where calls > 1000`); err != nil {
+		t.Fatalf("restore core row: %v", err)
+	}
+	for _, damage := range []struct{ name, statement string }{
+		{"another provider's row is wrong", `update usage_pricing_hourly_provider_rollups_v1 set calls = calls - 1000 where calls > 1000;
+			update usage_pricing_hourly_provider_rollups_v1 set input_tokens = input_tokens + 1 where auth_provider_snapshot = 'codex'`},
+		{"another provider's rows are missing", `update usage_pricing_hourly_provider_rollups_v1 set input_tokens = input_tokens - 1 where auth_provider_snapshot = 'codex';
+			delete from usage_pricing_hourly_provider_rollups_v1 where provider = '' and auth_provider_snapshot = ''`},
+		{"table is empty", `delete from usage_pricing_hourly_provider_rollups_v1`},
+	} {
+		if _, err := sqlDB.ExecContext(ctx, damage.statement); err != nil {
+			t.Fatalf("damage provider rows: %v", err)
+		}
+		t.Run(damage.name, func(t *testing.T) {
+			assertMatchesRaw(t, filters["claude"])
+			assertMatchesRaw(t, filters["provider only"])
+		})
+	}
 }

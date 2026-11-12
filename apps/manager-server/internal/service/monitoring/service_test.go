@@ -3464,7 +3464,6 @@ func TestAnalyticsHourlyRollupEligibilityIsStrict(t *testing.T) {
 	}{
 		{name: "search", mutate: func(filter *store.AnalyticsFilter) { filter.SearchQuery = "model" }},
 		{name: "search api key", mutate: func(filter *store.AnalyticsFilter) { filter.SearchAPIKeyHash = "key" }},
-		{name: "providers", mutate: func(filter *store.AnalyticsFilter) { filter.Providers = []string{"codex"} }},
 		{name: "accounts", mutate: func(filter *store.AnalyticsFilter) { filter.Accounts = []string{"account"} }},
 		{name: "credential ids", mutate: func(filter *store.AnalyticsFilter) { filter.CredentialIDs = []string{"credential"} }},
 		{name: "auth files", mutate: func(filter *store.AnalyticsFilter) { filter.AuthFiles = []string{"account.json"} }},
@@ -3492,6 +3491,7 @@ func TestAnalyticsHourlyRollupEligibilityIsStrict(t *testing.T) {
 
 	for _, supported := range []store.AnalyticsFilter{
 		{IncludeFailed: true, Models: []string{"model-a"}},
+		{IncludeFailed: true, Providers: []string{"codex"}},
 		{IncludeFailed: false},
 		{IncludeFailed: true, FailedOnly: true},
 	} {

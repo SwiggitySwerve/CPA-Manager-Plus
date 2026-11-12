@@ -518,16 +518,21 @@ func TestPricingRollupRevisionRollbackDoesNotDoubleCount(t *testing.T) {
 	}
 	assertSingleCall()
 	// Restore revision A. A limit of one clears only the hourly row in the first
-	// transaction, leaving the account row for the resumed transaction.
+	// transaction and the provider-keyed row in the second, leaving the account row
+	// for the resumed transaction.
 	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": threshold(100)}); err != nil {
 		t.Fatalf("rollback to prices A: %v", err)
 	}
-	result, err := st.CatchUpUsagePricing(ctx, 1, 30_000)
-	if err != nil {
-		t.Fatalf("start bounded rollback clearing: %v", err)
-	}
-	if !result.Pending || !result.Rebuilt || result.Processed != 0 || !result.ContinueSoon {
-		t.Fatalf("first bounded rollback result = %#v", result)
+	var result store.UsagePricingCatchUpResult
+	for _, nowMS := range []int64{30_000, 30_500} {
+		var err error
+		result, err = st.CatchUpUsagePricing(ctx, 1, nowMS)
+		if err != nil {
+			t.Fatalf("bounded rollback clearing: %v", err)
+		}
+		if !result.Pending || !result.Rebuilt || result.Processed != 0 || !result.ContinueSoon {
+			t.Fatalf("bounded rollback result at %d = %#v", nowMS, result)
+		}
 	}
 	state, err := st.UsagePricingState(ctx)
 	if err != nil {
