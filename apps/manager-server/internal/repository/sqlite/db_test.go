@@ -82,8 +82,8 @@ func TestOpenWithOptionsAppliesConnectionDefaults(t *testing.T) {
 	}
 
 	stats := db.Stats()
-	if stats.MaxOpenConnections != defaultMaxOpenConns {
-		t.Fatalf("MaxOpenConnections = %d, want %d", stats.MaxOpenConnections, defaultMaxOpenConns)
+	if stats.MaxOpenConnections != defaultMaxOpenConns+writeGatePoolReserve {
+		t.Fatalf("MaxOpenConnections = %d, want %d", stats.MaxOpenConnections, defaultMaxOpenConns+writeGatePoolReserve)
 	}
 	if stats.OpenConnections != defaultMaxOpenConns || stats.InUse != defaultMaxOpenConns {
 		t.Fatalf("open/in-use connections = %d/%d, want %d/%d", stats.OpenConnections, stats.InUse, defaultMaxOpenConns, defaultMaxOpenConns)

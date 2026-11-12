@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -42,9 +43,12 @@ func TestPoolWritersWaitForALongWriteInsteadOfFailingBusy(t *testing.T) {
 		_ = holder.Commit()
 	}()
 
+	// More queued writers than the configured pool size, so readers only get a connection
+	// if the queue cannot take theirs.
+	const statementWriters = defaultMaxOpenConns + 2
 	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	wg.Add(2)
+	errs := make(chan error, statementWriters+2)
+	wg.Add(statementWriters + 2)
 	go func() {
 		defer wg.Done()
 		tx, err := db.BeginTx(ctx, nil)
@@ -59,22 +63,36 @@ func TestPoolWritersWaitForALongWriteInsteadOfFailingBusy(t *testing.T) {
 		}
 		errs <- tx.Commit()
 	}()
+	for index := 0; index < statementWriters; index++ {
+		go func() {
+			defer wg.Done()
+			_, err := db.ExecContext(ctx, `insert into gate_probe(writer) values ('statement')`)
+			errs <- err
+		}()
+	}
+	// A write run as a query (INSERT ... RETURNING) queues too.
 	go func() {
 		defer wg.Done()
-		_, err := db.ExecContext(ctx, `insert into gate_probe(writer) values ('statement')`)
-		errs <- err
+		var id int64
+		errs <- db.QueryRowContext(ctx, `insert into gate_probe(writer) values ('returning') returning rowid`).Scan(&id)
 	}()
 
-	// A reader is not queued behind the writers.
-	time.Sleep(100 * time.Millisecond)
-	readStarted := time.Now()
+	// Readers are not queued behind the writers, and get pool connections.
+	time.Sleep(200 * time.Millisecond)
+	readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+	defer cancelRead()
 	var count int
-	if err := db.QueryRowContext(ctx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+	if err := db.QueryRowContext(readCtx, `select count(*) from gate_probe`).Scan(&count); err != nil {
 		t.Fatalf("read during the long write: %v", err)
 	}
-	if waited := time.Since(readStarted); waited > time.Second {
-		t.Fatalf("read waited %s behind the writers", waited)
+	readTx, err := db.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("read-only transaction during the long write: %v", err)
 	}
+	if err := readTx.QueryRowContext(readCtx, `select count(*) from gate_probe`).Scan(&count); err != nil {
+		t.Fatalf("read in a read-only transaction during the long write: %v", err)
+	}
+	_ = readTx.Rollback()
 
 	// A writer whose context ends while it waits gets its context error, not BUSY.
 	shortCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -96,8 +114,8 @@ func TestPoolWritersWaitForALongWriteInsteadOfFailingBusy(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `select count(*) from gate_probe`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 3 {
-		t.Fatalf("rows = %d, want holder, transaction and statement", count)
+	if want := statementWriters + 3; count != want {
+		t.Fatalf("rows = %d, want %d: holder, transaction, statements and returning", count, want)
 	}
 }
 

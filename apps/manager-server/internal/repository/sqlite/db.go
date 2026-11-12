@@ -29,7 +29,13 @@ func OpenWithOptions(options Options) (*sql.DB, error) {
 	if err != nil {
 		return nil, enrichOpenError(dbPath, err)
 	}
-	db.SetMaxOpenConns(options.maxOpenConns())
+	maxOpen := options.maxOpenConns()
+	if maxOpen > 1 {
+		// Room for queued writers beyond the readers' share; a one-connection pool
+		// serializes everything already.
+		maxOpen += writeGatePoolReserve
+	}
+	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(options.maxIdleConns())
 	db.SetConnMaxIdleTime(options.connMaxIdleTime())
 	if err := Migrate(db); err != nil {

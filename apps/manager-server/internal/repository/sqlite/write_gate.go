@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,10 +17,26 @@ import (
 // waits for it as long as its context allows. Read-only transactions and queries never
 // take it, so analytics readers are not held up. busy_timeout still covers other
 // processes and connections outside the pool.
+//
+// A queued writer keeps the pool connection it waits on. So that queued writers cannot take
+// the connections readers need, the pool gets writeGatePoolReserve connections more than
+// its configured size, and at most writeGateQueueLimit writers queue at once; a writer
+// beyond that goes straight to SQLite and polls as before the gate.
 type writeGateConnector struct {
 	dsn    string
 	driver driver.Driver
-	gate   chan struct{}
+	gate   *writeGate
+}
+
+const (
+	writeGateQueueLimit = 8
+	// writeGatePoolReserve covers the writer holding the gate and every queued writer.
+	writeGatePoolReserve = writeGateQueueLimit + 1
+)
+
+type writeGate struct {
+	slot    chan struct{}
+	waiting atomic.Int32
 }
 
 func openWriteGated(dsn string) (*sql.DB, error) {
@@ -32,7 +49,7 @@ func openWriteGated(dsn string) (*sql.DB, error) {
 	if err := probe.Close(); err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(&writeGateConnector{dsn: dsn, driver: drv, gate: make(chan struct{}, 1)}), nil
+	return sql.OpenDB(&writeGateConnector{dsn: dsn, driver: drv, gate: &writeGate{slot: make(chan struct{}, 1)}}), nil
 }
 
 func (c *writeGateConnector) Connect(context.Context) (driver.Conn, error) {
@@ -59,7 +76,7 @@ type sqliteConn interface {
 
 type writeGateConn struct {
 	conn driver.Conn
-	gate chan struct{}
+	gate *writeGate
 	// inTx is set while this connection holds a transaction, begun through BeginTx or
 	// with a BEGIN statement. database/sql uses a connection from one goroutine at a
 	// time, so it needs no lock.
@@ -75,17 +92,23 @@ var writeGateMaxWait = 2 * time.Minute
 func (c *writeGateConn) inner() sqliteConn { return c.conn.(sqliteConn) }
 
 // acquire waits for the gate. It reports whether it took the gate, which the caller must
-// then release; it returns false without error when the wait reached writeGateMaxWait.
+// then release; it returns false without error when the queue is full or the wait reached
+// writeGateMaxWait.
 func (c *writeGateConn) acquire(ctx context.Context) (bool, error) {
 	select {
-	case c.gate <- struct{}{}:
+	case c.gate.slot <- struct{}{}:
 		return true, nil
 	default:
 	}
+	if c.gate.waiting.Add(1) > writeGateQueueLimit {
+		c.gate.waiting.Add(-1)
+		return false, nil
+	}
+	defer c.gate.waiting.Add(-1)
 	timer := time.NewTimer(writeGateMaxWait)
 	defer timer.Stop()
 	select {
-	case c.gate <- struct{}{}:
+	case c.gate.slot <- struct{}{}:
 		return true, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -94,7 +117,7 @@ func (c *writeGateConn) acquire(ctx context.Context) (bool, error) {
 	}
 }
 
-func (c *writeGateConn) release() { <-c.gate }
+func (c *writeGateConn) release() { <-c.gate.slot }
 
 func (c *writeGateConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	gated := false
@@ -177,8 +200,53 @@ func transactionStatement(query string) string {
 	return ""
 }
 
+// QueryContext runs reads as they are. A write run as a query outside a transaction
+// (INSERT ... RETURNING) holds the gate until its rows are closed.
 func (c *writeGateConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	return c.inner().QueryContext(ctx, query, args)
+	if c.inTx || !writeStatement(query) {
+		return c.inner().QueryContext(ctx, query, args)
+	}
+	gated, err := c.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := c.inner().QueryContext(ctx, query, args)
+	if !gated {
+		return rows, err
+	}
+	if err != nil {
+		c.release()
+		return nil, err
+	}
+	return &writeGateRows{Rows: rows, conn: c}, nil
+}
+
+// writeStatement reports whether a statement starts with a data-changing keyword.
+func writeStatement(query string) bool {
+	words := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "insert", "update", "delete", "replace":
+		return true
+	}
+	return false
+}
+
+type writeGateRows struct {
+	driver.Rows
+	conn     *writeGateConn
+	released bool
+}
+
+func (r *writeGateRows) Close() error {
+	err := r.Rows.Close()
+	if !r.released {
+		r.released = true
+		r.conn.release()
+	}
+	return err
 }
 
 func (c *writeGateConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
