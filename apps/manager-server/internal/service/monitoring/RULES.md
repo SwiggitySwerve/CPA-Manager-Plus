@@ -17,8 +17,12 @@ included and ambiguous. No IDs, stored rows, accounting values, archive retentio
 historical tiers are rewritten. No retry or inbound-request claim is made.
 
 Providers and model rates come from full filtered aggregation plus registration,
-never the request page. Grouped latency uses SQLite ranking so Go holds only
-results, not all samples. Uninstrumented TTFT stays unknown; output speed divides
+never the request page. `ProxAnalytics` ranks latency in Go: one
+`LatencyBreakdownWithFilter` scan keeps every positive latency and TTFT sample of
+its range in memory, in four groups per row (overall, bucket, model, provider).
+That is bounded by one scan of at most 31 days with at most two admitted
+concurrently, not by SQLite ranking; `GroupedLatencyWithFilter` still ranks in
+SQLite and holds only results. Uninstrumented TTFT stays unknown; output speed divides
 output by full latency only. Request zero tokens require reported presence and a
 true component flag; positive retained legacy counters stay visible. Aggregates
 remain known retained counters with explicit measurement limitations.
