@@ -2,6 +2,12 @@ package usageevent
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -87,7 +93,59 @@ where
 order by id
 limit ?`
 
-func (r *repository) collectResponseMetadataBackfillUpdates(ctx context.Context, maxUpdates int, pageLimit int) ([]responseMetadataBackfillUpdate, error) {
+// responseMetadataBackfillCursorKey names the settings row that records how far the
+// backfill has checked usage_events. Rows are only ever inserted with new, larger IDs,
+// so once a scan finds nothing to update, every row up to the largest ID that existed
+// when it started is done and later starts check only newer rows: rows from this build
+// need nothing, and rows written by an older build after a downgrade are newer. The
+// cursor is kept only for the selection that produced it; a change to
+// responseMetadataBackfillSelect, which is how a new header parser reaches old rows,
+// starts over from the first row.
+const responseMetadataBackfillCursorKey = "usage_response_metadata_backfill_v1"
+
+type responseMetadataBackfillCursor struct {
+	SelectSHA256     string `json:"select_sha256"`
+	CheckedThroughID int64  `json:"checked_through_id"`
+}
+
+func responseMetadataBackfillSelectSHA256() string {
+	sum := sha256.Sum256([]byte(responseMetadataBackfillSelect))
+	return hex.EncodeToString(sum[:])
+}
+
+// responseMetadataBackfillStartID returns the ID after which rows may still need the
+// backfill.
+func (r *repository) responseMetadataBackfillStartID(ctx context.Context) (int64, error) {
+	var raw string
+	err := r.db.QueryRowContext(ctx, `select value from settings where key = ?`, responseMetadataBackfillCursorKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var cursor responseMetadataBackfillCursor
+	if err := json.Unmarshal([]byte(raw), &cursor); err != nil || cursor.SelectSHA256 != responseMetadataBackfillSelectSHA256() {
+		return 0, nil
+	}
+	return cursor.CheckedThroughID, nil
+}
+
+func (r *repository) saveResponseMetadataBackfillCursor(ctx context.Context, checkedThroughID int64) error {
+	value, err := json.Marshal(responseMetadataBackfillCursor{
+		SelectSHA256:     responseMetadataBackfillSelectSHA256(),
+		CheckedThroughID: checkedThroughID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `insert into settings(key, value, updated_at_ms) values (?, ?, ?)
+		on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
+		responseMetadataBackfillCursorKey, string(value), time.Now().UnixMilli())
+	return err
+}
+
+func (r *repository) collectResponseMetadataBackfillUpdates(ctx context.Context, afterID int64, maxUpdates int, pageLimit int) ([]responseMetadataBackfillUpdate, error) {
 	if maxUpdates <= 0 {
 		return nil, nil
 	}
@@ -96,7 +154,7 @@ func (r *repository) collectResponseMetadataBackfillUpdates(ctx context.Context,
 	}
 
 	updates := make([]responseMetadataBackfillUpdate, 0, maxUpdates)
-	lastID := int64(0)
+	lastID := afterID
 	for len(updates) < maxUpdates {
 		items, err := r.responseMetadataBackfillPage(ctx, lastID, pageLimit)
 		if err != nil {
@@ -149,7 +207,11 @@ func (r *repository) collectResponseMetadataBackfillUpdates(ctx context.Context,
 }
 
 func (r *repository) ResponseMetadataBackfillPending(ctx context.Context) (bool, error) {
-	updates, err := r.collectResponseMetadataBackfillUpdates(ctx, 1, defaultResponseMetadataBackfillBatch)
+	startID, err := r.responseMetadataBackfillStartID(ctx)
+	if err != nil {
+		return false, err
+	}
+	updates, err := r.collectResponseMetadataBackfillUpdates(ctx, startID, 1, defaultResponseMetadataBackfillBatch)
 	if err != nil {
 		return false, err
 	}
@@ -161,11 +223,28 @@ func (r *repository) BackfillResponseMetadata(ctx context.Context, batchLimit in
 		batchLimit = defaultResponseMetadataBackfillBatch
 	}
 
-	updates, err := r.collectResponseMetadataBackfillUpdates(ctx, batchLimit, batchLimit)
+	startID, err := r.responseMetadataBackfillStartID(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// Read before the scan: every row up to it is checked by the scan below.
+	var latestID int64
+	if err := r.db.QueryRowContext(ctx, `select coalesce(max(id), 0) from usage_events`).Scan(&latestID); err != nil {
+		return 0, err
+	}
+	updates, err := r.collectResponseMetadataBackfillUpdates(ctx, startID, batchLimit, batchLimit)
 	if err != nil {
 		return 0, err
 	}
 	if len(updates) == 0 {
+		if latestID > startID {
+			if err := r.saveResponseMetadataBackfillCursor(ctx, latestID); err != nil {
+				return 0, err
+			}
+			if startID == 0 {
+				log.Printf("usage response metadata backfill: rows checked through id=%d; later starts check only newer rows", latestID)
+			}
+		}
 		return 0, nil
 	}
 
