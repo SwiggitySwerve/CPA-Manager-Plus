@@ -28,7 +28,7 @@ func (s *Service) ProxAnalytics(ctx context.Context, q ProxAnalyticsQuery) (Prox
 	}
 	defer release()
 	var result ProxAnalyticsResponse
-	err = s.store.WithModelPriceSnapshot(func() error {
+	err = s.store.WithModelPriceSnapshot(ctx, func() error {
 		var err error
 		result, err = s.proxAnalytics(ctx, q, false)
 		if errors.Is(err, errSupplementaryChanged) {

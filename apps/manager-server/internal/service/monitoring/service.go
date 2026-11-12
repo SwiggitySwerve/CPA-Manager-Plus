@@ -925,7 +925,7 @@ type EventRow struct {
 
 func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) {
 	var response Response
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err := s.store.WithModelPriceSnapshot(ctx, func() error {
 		var analyticsErr error
 		response, analyticsErr = s.analytics(ctx, req)
 		return analyticsErr
@@ -1777,7 +1777,7 @@ func (s *Service) deletedHourlyEdges(ctx context.Context, fromMS, toMS int64, ha
 
 func (s *Service) AccountHistory(ctx context.Context, req AccountHistoryRequest) (AccountHistoryResponse, error) {
 	var response AccountHistoryResponse
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err := s.store.WithModelPriceSnapshot(ctx, func() error {
 		var historyErr error
 		response, historyErr = s.accountHistory(ctx, req)
 		return historyErr
@@ -2006,7 +2006,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 
 func (s *Service) AccountWindowUsage(ctx context.Context, req AccountWindowUsageRequest) (AccountWindowUsageResponse, error) {
 	var response AccountWindowUsageResponse
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err := s.store.WithModelPriceSnapshot(ctx, func() error {
 		var usageErr error
 		response, usageErr = s.accountWindowUsage(ctx, req)
 		return usageErr

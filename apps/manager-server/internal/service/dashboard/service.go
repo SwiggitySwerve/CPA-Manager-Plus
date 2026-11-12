@@ -216,7 +216,7 @@ type SummaryResponse struct {
 
 func (s *Service) Summary(ctx context.Context, p SummaryParams) (SummaryResponse, error) {
 	var response SummaryResponse
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err := s.store.WithModelPriceSnapshot(ctx, func() error {
 		var summaryErr error
 		response, summaryErr = s.summary(ctx, p)
 		return summaryErr

@@ -16,6 +16,10 @@ query tries the reserved slot first and then either slot; search-filtered querie
 raw rows, can take the whole deadline cold, and never use the reserved slot, so two of
 them cannot queue a fast view. The reserved slot is admission only: all queries still
 share the SQLite connection pool.
+Every view then reads under one model-price snapshot (`WithModelPriceSnapshot`). A price
+save waits for running snapshots and blocks new ones, so that wait also ends with the
+request context: a cancelled or timed-out request returns its context error instead of
+queueing behind a long read and the save (`TestWithModelPriceSnapshotWaitEndsWithContext`).
 
 Model, outcome and provider filters are served by the hourly rollups. The provider is a
 key of `usage_pricing_hourly_provider_rollups_v1` only: the pricing rollup fills it in

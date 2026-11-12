@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -143,7 +142,7 @@ type UsagePricingAccountSnapshot struct {
 
 type Store struct {
 	db            *sql.DB
-	modelPricesMu sync.RWMutex
+	modelPricesMu priceLock
 
 	Settings         setting.Repository
 	UsageEvents      usageevent.Repository
@@ -290,22 +289,29 @@ func (s *Store) LoadModelPrices(ctx context.Context) (map[string]ModelPrice, err
 }
 
 func (s *Store) SaveModelPrices(ctx context.Context, prices map[string]ModelPrice) error {
-	s.modelPricesMu.Lock()
-	defer s.modelPricesMu.Unlock()
+	if err := s.modelPricesMu.lock(ctx); err != nil {
+		return err
+	}
+	defer s.modelPricesMu.unlock()
 	return s.ModelPrices.ReplaceAll(ctx, prices)
 }
 
 func (s *Store) UpsertSyncedModelPrices(ctx context.Context, prices map[string]ModelPrice) (ModelPriceSyncResult, error) {
-	s.modelPricesMu.Lock()
-	defer s.modelPricesMu.Unlock()
+	if err := s.modelPricesMu.lock(ctx); err != nil {
+		return ModelPriceSyncResult{}, err
+	}
+	defer s.modelPricesMu.unlock()
 	return s.ModelPrices.UpsertSynced(ctx, prices)
 }
 
 // WithModelPriceSnapshot prevents model-price mutations while a service reads
 // usage bands and applies the corresponding price book across multiple queries.
-func (s *Store) WithModelPriceSnapshot(read func() error) error {
-	s.modelPricesMu.RLock()
-	defer s.modelPricesMu.RUnlock()
+// The wait for a running price save ends with ctx and returns its error.
+func (s *Store) WithModelPriceSnapshot(ctx context.Context, read func() error) error {
+	if err := s.modelPricesMu.rLock(ctx); err != nil {
+		return err
+	}
+	defer s.modelPricesMu.rUnlock()
 	return read()
 }
 

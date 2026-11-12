@@ -270,7 +270,7 @@ func TestProxProviderViewStaysExactWhileProviderRollupFills(t *testing.T) {
 func proxResponseJSON(t *testing.T, ctx context.Context, service *Service, q ProxAnalyticsQuery, forceRaw bool) []byte {
 	t.Helper()
 	var response ProxAnalyticsResponse
-	err := service.store.WithModelPriceSnapshot(func() error {
+	err := service.store.WithModelPriceSnapshot(ctx, func() error {
 		var err error
 		response, err = service.proxAnalytics(ctx, q, forceRaw)
 		return err
