@@ -9,7 +9,13 @@ pricing arithmetic and receives no raw envelopes, credential hashes or bodies.
 catalog is supplied by the trusted adapter, not a browser. Queries accept at most
 31 days, 200 rows, 1000 registrations, 256 bytes of search, an IANA timezone and a
 paired timestamp/ID cursor. Unknown JSON fields and trailing input are rejected.
-Two queries may run per service, under the controller's 30-second deadline.
+Two queries may run per service, plus one reserved slot for queries the hourly rollups
+can serve (no provider or search filter; `analyticsHourlyRollupEligible`), so at most
+three run at once. The controller's 30-second deadline includes the wait for a slot. A
+rollup-eligible query tries the reserved slot first and then either slot; provider- and
+search-filtered queries scan raw rows, can take the whole deadline cold, and never use
+the reserved slot, so two of them cannot queue a fast view. The reserved slot is
+admission only: all queries still share the SQLite connection pool.
 
 Every primary view excludes explicitly supplementary records using the usage
 owner's retained-envelope predicate. Legacy records without record kind remain
@@ -34,7 +40,9 @@ and verified typed migration, including projection/rollup invalidation.
 
 Focused enforcement: `TestProxAnalyticsWholeScopePagingRatesAndSafeFields`,
 `TestProxAnalyticsPanelAuthorizationAndStrictBody`, `TestProxNullableRequestTokens`,
-`TestProxQueryBoundsAndCancelledAdmission`, and the pricing/usage analytics tests.
+`TestProxQueryBoundsAndCancelledAdmission`,
+`TestProxFastQueryIsAdmittedWhileSlowQueriesHoldGeneralSlots`, and the pricing/usage
+analytics tests.
 
 When it exists, the raw latency scan behind a view without a search term reads only
 `idx_usage_events_ts_latency_groups_cover` (timestamp, latency, TTFT, model, requested model,

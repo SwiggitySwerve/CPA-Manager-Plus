@@ -40,7 +40,10 @@ const (
 )
 
 type Service struct {
+	// proxQueries admits any Prox analytics query; proxFastQueries is one extra slot
+	// reserved for queries that the hourly rollups can serve (see admitProx).
 	proxQueries      chan struct{}
+	proxFastQueries  chan struct{}
 	store            *store.Store
 	hourlyReader     *usagehourly.Reader
 	monitoringReader *monitoringrollup.Reader
@@ -110,6 +113,7 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 	}
 	return &Service{
 		proxQueries:      make(chan struct{}, 2),
+		proxFastQueries:  make(chan struct{}, 1),
 		store:            store,
 		hourlyReader:     usagehourly.New(store, enabled, "monitoring-rollup"),
 		monitoringReader: monitoringrollup.New(store),
