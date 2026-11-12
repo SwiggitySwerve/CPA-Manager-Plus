@@ -50,6 +50,43 @@ func TestAnalyticsRecoversIncompletePricingFromRetainedEvents(t *testing.T) {
 	}
 }
 
+// A provider filter reads archived history from the rollups, like an unfiltered view. Every
+// fixture event is openai's, so that filter must return the unfiltered baseline, from
+// stored provider rows and, when those are damaged, recovered from retained events.
+func TestAnalyticsProviderFilterReadsArchivedHistoryExactly(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		sql  string
+	}{
+		{"stored provider rows", `select 1`},
+		{"missing provider rows", `delete from usage_pricing_hourly_provider_rollups_v1`},
+		{"same calls wrong tokens", `update usage_pricing_hourly_provider_rollups_v1 set input_tokens = input_tokens + 1`},
+		{"stale pricing revision", `update usage_pricing_rollup_state set structure_revision = 'obsolete'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, sqlDB, request, want := pricingCoverageFixture(t)
+			ctx := context.Background()
+			if _, err := sqlDB.ExecContext(ctx, test.sql); err != nil {
+				t.Fatalf("damage provider rows: %v", err)
+			}
+			request.Filters.Providers = []string{" OpenAI "}
+			got, err := New(db, true).Analytics(ctx, request)
+			if err != nil {
+				t.Fatalf("provider-filtered archived analytics: %v", err)
+			}
+			assertPricingCoverageAnalytics(t, got, want)
+			if got.Coverage == nil || !got.Coverage.CoreAggregateUsed || got.Coverage.RawDeletedEventCount == 0 {
+				t.Fatalf("test did not read deleted history: %#v", got.Coverage)
+			}
+			request.Filters.Providers = []string{"anthropic"}
+			other, err := New(db, true).Analytics(ctx, request)
+			if err != nil || other.Summary == nil || other.Summary.TotalCalls != 0 || len(other.ModelStats) != 0 {
+				t.Fatalf("another provider's view = %#v, error %v", other.Summary, err)
+			}
+		})
+	}
+}
+
 func TestAnalyticsIncompletePricingFailsClosedWithoutCompatibleEvents(t *testing.T) {
 	for _, test := range []struct {
 		name string

@@ -1866,6 +1866,10 @@ func validateCurrentDeleteReadiness(
 	if err != nil {
 		return hourlyAggregateCoverageState{}, err
 	}
+	statsRevision, err := usagepricing.PriceStructureRevision(ctx, tx)
+	if err != nil {
+		return hourlyAggregateCoverageState{}, err
+	}
 	var pricingVersion int
 	var pricingStateRevision, pricingStatus string
 	var pricingCoverage int64
@@ -1901,7 +1905,7 @@ func validateCurrentDeleteReadiness(
 		{
 			name:             usagemonitoring.StatsRollupName,
 			expectedVersion:  usagemonitoring.SchemaVersion,
-			expectedRevision: pricingRevision,
+			expectedRevision: statsRevision,
 		},
 		{
 			name:             usagemonitoring.MetadataRollupName,

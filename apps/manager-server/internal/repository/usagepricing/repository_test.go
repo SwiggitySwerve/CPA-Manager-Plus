@@ -492,6 +492,12 @@ func TestPricingRollupRevisionRollbackDoesNotDoubleCount(t *testing.T) {
 		if err != nil || !available || len(hourlyRows) != 1 || hourlyRows[0].Calls != 1 {
 			t.Fatalf("pricing hourly rows after rollback = available:%v err:%v %#v", available, err, hourlyRows)
 		}
+		providerFilter := hourlyFilter
+		providerFilter.Providers = []string{"openai"}
+		providerRows, _, available, err := st.UsagePricingHourlyRows(ctx, providerFilter)
+		if err != nil || !available || len(providerRows) != 1 || providerRows[0].Calls != 1 {
+			t.Fatalf("pricing provider rows after rollback = available:%v err:%v %#v", available, err, providerRows)
+		}
 		accountRows, _, accountAvailable, err := st.UsagePricingAccountRows(ctx, []string{accountKey})
 		if err != nil || !accountAvailable || len(accountRows) != 1 || accountRows[0].Calls != 1 {
 			t.Fatalf("pricing account rows after rollback = available:%v err:%v %#v", accountAvailable, err, accountRows)
@@ -518,16 +524,21 @@ func TestPricingRollupRevisionRollbackDoesNotDoubleCount(t *testing.T) {
 	}
 	assertSingleCall()
 	// Restore revision A. A limit of one clears only the hourly row in the first
-	// transaction, leaving the account row for the resumed transaction.
+	// transaction and the provider-keyed row in the second, leaving the account row
+	// for the resumed transaction.
 	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": threshold(100)}); err != nil {
 		t.Fatalf("rollback to prices A: %v", err)
 	}
-	result, err := st.CatchUpUsagePricing(ctx, 1, 30_000)
-	if err != nil {
-		t.Fatalf("start bounded rollback clearing: %v", err)
-	}
-	if !result.Pending || !result.Rebuilt || result.Processed != 0 || !result.ContinueSoon {
-		t.Fatalf("first bounded rollback result = %#v", result)
+	var result store.UsagePricingCatchUpResult
+	for _, nowMS := range []int64{30_000, 30_500} {
+		var err error
+		result, err = st.CatchUpUsagePricing(ctx, 1, nowMS)
+		if err != nil {
+			t.Fatalf("bounded rollback clearing: %v", err)
+		}
+		if !result.Pending || !result.Rebuilt || result.Processed != 0 || !result.ContinueSoon {
+			t.Fatalf("bounded rollback result at %d = %#v", nowMS, result)
+		}
 	}
 	state, err := st.UsagePricingState(ctx)
 	if err != nil {

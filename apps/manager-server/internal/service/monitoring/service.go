@@ -2749,7 +2749,15 @@ func buildTimeline(points []store.TimelinePoint, percentiles []store.LatencyPerc
 		if orderedPoints[i].BillingModel != orderedPoints[j].BillingModel {
 			return orderedPoints[i].BillingModel < orderedPoints[j].BillingModel
 		}
-		return orderedPoints[i].ServiceTier < orderedPoints[j].ServiceTier
+		if orderedPoints[i].ServiceTier != orderedPoints[j].ServiceTier {
+			return orderedPoints[i].ServiceTier < orderedPoints[j].ServiceTier
+		}
+		// The pricing band completes the key, so a bucket's float sums do not depend on
+		// whether the points came from rollups or from a raw scan in time order.
+		if orderedPoints[i].PricingModel != orderedPoints[j].PricingModel {
+			return orderedPoints[i].PricingModel < orderedPoints[j].PricingModel
+		}
+		return orderedPoints[i].ContextThresholdTokens < orderedPoints[j].ContextThresholdTokens
 	})
 
 	buckets := make(map[int64]*bucketAccumulator, len(orderedPoints))

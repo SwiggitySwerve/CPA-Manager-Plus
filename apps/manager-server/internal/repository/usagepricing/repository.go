@@ -3,6 +3,7 @@ package usagepricing
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -20,6 +21,14 @@ const (
 	RollupName    = "pricing_v1"
 	SchemaVersion = 1
 	hourMS        = int64(time.Hour / time.Millisecond)
+
+	hourlyTable = "usage_pricing_hourly_rollups_v1"
+	// hourlyProviderTable holds the hourly rows split further by the event's provider and
+	// auth provider snapshot, so a provider filter can be answered from stored rows.
+	hourlyProviderTable = "usage_pricing_hourly_provider_rollups_v1"
+	// layoutRevision names the tables one pricing revision fills. A database whose stored
+	// revision lacks it rebuilds once, which is how hourlyProviderTable gets its history.
+	layoutRevision = "provider-1"
 )
 
 var ErrUnsupportedSchema = errors.New("unsupported usage pricing rollup schema")
@@ -72,6 +81,11 @@ type HourlyFilter struct {
 	CollapseBuckets  bool
 	LeftEdgeDeleted  bool
 	RightEdgeDeleted bool
+	// Providers keeps events whose provider or auth provider snapshot is one of these,
+	// compared in lower case like the raw analytics filter. ByProvider reads the
+	// provider-keyed table without narrowing it; Providers implies it.
+	Providers  []string
+	ByProvider bool
 }
 
 type HourlyRow struct {
@@ -407,7 +421,8 @@ func resetForRevision(ctx context.Context, tx *sql.Tx, revision string, latestID
 func clearRevisionRowsBatch(ctx context.Context, tx *sql.Tx, revision string, limit int) (bool, error) {
 	remaining := limit
 	for _, tableName := range []string{
-		"usage_pricing_hourly_rollups_v1",
+		hourlyTable,
+		hourlyProviderTable,
 		"usage_pricing_account_rollups_v1",
 	} {
 		if remaining > 0 {
@@ -475,7 +490,18 @@ type RowQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// StructureRevision is the revision the pricing rollup state must carry for its rows to be
+// read: the price structure they were banded with, plus the table layout they fill.
 func StructureRevision(ctx context.Context, db RowQuerier) (string, error) {
+	revision, err := PriceStructureRevision(ctx, db)
+	if err != nil {
+		return "", err
+	}
+	return revision + ":" + layoutRevision, nil
+}
+
+// PriceStructureRevision changes when model prices change the pricing bands.
+func PriceStructureRevision(ctx context.Context, db RowQuerier) (string, error) {
 	rows, err := db.QueryContext(ctx, `select p.model, t.threshold_tokens
 		from model_prices p
 		left join model_price_context_tiers t on t.model = p.model
@@ -593,11 +619,25 @@ func bandedEventsFromSourceCTE(whereClause, source string) string {
 		)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, accountKeyExpression, source, whereClause, model.ModelPriceBaseContextThreshold)
 }
 
+// upsertHourlyBatch adds one batch of events to the hourly table and to the provider-keyed
+// one, which has the same rows split by two more key columns.
 func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, source, revision string, afterID, throughID, nowMS int64) error {
+	for _, target := range []struct{ table, keyColumns, keyValues, keyGroup string }{
+		{table: hourlyTable},
+		{hourlyProviderTable, ", provider, auth_provider_snapshot", "coalesce(provider, ''), coalesce(auth_provider_snapshot, ''),", ", 9, 10"},
+	} {
+		if err := upsertHourlyTableBatch(ctx, tx, source, revision, afterID, throughID, nowMS, target.table, target.keyColumns, target.keyValues, target.keyGroup); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func upsertHourlyTableBatch(ctx context.Context, tx *sql.Tx, source, revision string, afterID, throughID, nowMS int64, table, keyColumns, keyValues, keyGroup string) error {
 	query := bandedEventsFromSourceCTE("e.id > ? and e.id <= ?", source) + fmt.Sprintf(`
-	insert into usage_pricing_hourly_rollups_v1 (
+	insert into %[1]s (
 		structure_revision, bucket_ms, model, billing_model, pricing_model,
-		service_tier, context_threshold_tokens, failed, calls,
+		service_tier, context_threshold_tokens, failed%[4]s, calls,
 		input_tokens, output_tokens, reasoning_tokens, cached_tokens,
 		cache_read_tokens, cache_creation_tokens,
 		long_input_tokens, long_output_tokens, long_cached_tokens,
@@ -606,13 +646,14 @@ func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, source, revision string,
 	)
 	select
 		?,
-		timestamp_ms - (timestamp_ms %% %d),
+		timestamp_ms - (timestamp_ms %% %[2]d),
 		analytics_model_value,
 		billing_model_value,
 		pricing_model_value,
 		coalesce(service_tier, ''),
 		context_threshold_tokens_value,
 		failed,
+		%[5]s
 		count(*),
 		coalesce(sum(normalized_input_tokens_value), 0),
 		coalesce(sum(output_tokens), 0),
@@ -620,45 +661,40 @@ func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, source, revision string,
 		coalesce(sum(compatible_cached_tokens_value), 0),
 		coalesce(sum(cache_read_tokens), 0),
 		coalesce(sum(cache_creation_tokens), 0),
-		coalesce(sum(case when normalized_input_tokens_value > %d then normalized_input_tokens_value else 0 end), 0),
-		coalesce(sum(case when normalized_input_tokens_value > %d then output_tokens else 0 end), 0),
-		coalesce(sum(case when normalized_input_tokens_value > %d then compatible_cached_tokens_value else 0 end), 0),
-		coalesce(sum(case when normalized_input_tokens_value > %d then cache_read_tokens else 0 end), 0),
-		coalesce(sum(case when normalized_input_tokens_value > %d then cache_creation_tokens else 0 end), 0),
+		coalesce(sum(case when normalized_input_tokens_value > %[3]d then normalized_input_tokens_value else 0 end), 0),
+		coalesce(sum(case when normalized_input_tokens_value > %[3]d then output_tokens else 0 end), 0),
+		coalesce(sum(case when normalized_input_tokens_value > %[3]d then compatible_cached_tokens_value else 0 end), 0),
+		coalesce(sum(case when normalized_input_tokens_value > %[3]d then cache_read_tokens else 0 end), 0),
+		coalesce(sum(case when normalized_input_tokens_value > %[3]d then cache_creation_tokens else 0 end), 0),
 		coalesce(sum(total_tokens), 0),
 		coalesce(sum(case when latency_ms is not null and latency_ms != 0 then latency_ms else 0 end), 0),
 		count(nullif(latency_ms, 0)),
 		coalesce(sum(case when total_tokens = 0 and failed = 0 then 1 else 0 end), 0),
 		?
 	from banded_events
-	group by 2, 3, 4, 5, 6, 7, 8
+	group by 2, 3, 4, 5, 6, 7, 8%[6]s
 	on conflict(
 		structure_revision, bucket_ms, model, billing_model, pricing_model,
-		service_tier, context_threshold_tokens, failed
+		service_tier, context_threshold_tokens, failed%[4]s
 	) do update set
-		calls = usage_pricing_hourly_rollups_v1.calls + excluded.calls,
-		input_tokens = usage_pricing_hourly_rollups_v1.input_tokens + excluded.input_tokens,
-		output_tokens = usage_pricing_hourly_rollups_v1.output_tokens + excluded.output_tokens,
-		reasoning_tokens = usage_pricing_hourly_rollups_v1.reasoning_tokens + excluded.reasoning_tokens,
-		cached_tokens = usage_pricing_hourly_rollups_v1.cached_tokens + excluded.cached_tokens,
-		cache_read_tokens = usage_pricing_hourly_rollups_v1.cache_read_tokens + excluded.cache_read_tokens,
-		cache_creation_tokens = usage_pricing_hourly_rollups_v1.cache_creation_tokens + excluded.cache_creation_tokens,
-		long_input_tokens = usage_pricing_hourly_rollups_v1.long_input_tokens + excluded.long_input_tokens,
-		long_output_tokens = usage_pricing_hourly_rollups_v1.long_output_tokens + excluded.long_output_tokens,
-		long_cached_tokens = usage_pricing_hourly_rollups_v1.long_cached_tokens + excluded.long_cached_tokens,
-		long_cache_read_tokens = usage_pricing_hourly_rollups_v1.long_cache_read_tokens + excluded.long_cache_read_tokens,
-		long_cache_creation_tokens = usage_pricing_hourly_rollups_v1.long_cache_creation_tokens + excluded.long_cache_creation_tokens,
-		total_tokens = usage_pricing_hourly_rollups_v1.total_tokens + excluded.total_tokens,
-		latency_sum_ms = usage_pricing_hourly_rollups_v1.latency_sum_ms + excluded.latency_sum_ms,
-		latency_samples = usage_pricing_hourly_rollups_v1.latency_samples + excluded.latency_samples,
-		zero_token_calls = usage_pricing_hourly_rollups_v1.zero_token_calls + excluded.zero_token_calls,
+		calls = %[1]s.calls + excluded.calls,
+		input_tokens = %[1]s.input_tokens + excluded.input_tokens,
+		output_tokens = %[1]s.output_tokens + excluded.output_tokens,
+		reasoning_tokens = %[1]s.reasoning_tokens + excluded.reasoning_tokens,
+		cached_tokens = %[1]s.cached_tokens + excluded.cached_tokens,
+		cache_read_tokens = %[1]s.cache_read_tokens + excluded.cache_read_tokens,
+		cache_creation_tokens = %[1]s.cache_creation_tokens + excluded.cache_creation_tokens,
+		long_input_tokens = %[1]s.long_input_tokens + excluded.long_input_tokens,
+		long_output_tokens = %[1]s.long_output_tokens + excluded.long_output_tokens,
+		long_cached_tokens = %[1]s.long_cached_tokens + excluded.long_cached_tokens,
+		long_cache_read_tokens = %[1]s.long_cache_read_tokens + excluded.long_cache_read_tokens,
+		long_cache_creation_tokens = %[1]s.long_cache_creation_tokens + excluded.long_cache_creation_tokens,
+		total_tokens = %[1]s.total_tokens + excluded.total_tokens,
+		latency_sum_ms = %[1]s.latency_sum_ms + excluded.latency_sum_ms,
+		latency_samples = %[1]s.latency_samples + excluded.latency_samples,
+		zero_token_calls = %[1]s.zero_token_calls + excluded.zero_token_calls,
 		updated_at_ms = excluded.updated_at_ms`,
-		hourMS,
-		usage.LongContextInputTokenThreshold,
-		usage.LongContextInputTokenThreshold,
-		usage.LongContextInputTokenThreshold,
-		usage.LongContextInputTokenThreshold,
-		usage.LongContextInputTokenThreshold,
+		table, hourMS, usage.LongContextInputTokenThreshold, keyColumns, keyValues, keyGroup,
 	)
 	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
 	return err
@@ -839,6 +875,10 @@ func mergeStoredHourlyRows(
 	grouped map[hourlyKey]*HourlyRow,
 ) error {
 	conditions, args := storedHourlyConditions(revision, filter, fromMS, toMS)
+	table := hourlyTable
+	if filter.ByProvider || len(normalizeValues(filter.Providers)) > 0 {
+		table = hourlyProviderTable
+	}
 	bucketExpr := "bucket_ms"
 	if filter.CollapseBuckets {
 		bucketExpr = "0"
@@ -851,10 +891,10 @@ func mergeStoredHourlyRows(
 		sum(long_input_tokens), sum(long_output_tokens), sum(long_cached_tokens),
 		sum(long_cache_read_tokens), sum(long_cache_creation_tokens),
 		sum(total_tokens), sum(latency_sum_ms), sum(latency_samples), sum(zero_token_calls)
-	from usage_pricing_hourly_rollups_v1
+	from %s
 	where %s
 	group by 1, 2, 3, 4, 5, 6, 7
-	order by 1, 2, 3, 4, 5, 6, 7`, bucketExpr, strings.Join(conditions, " and ")), args...)
+	order by 1, 2, 3, 4, 5, 6, 7`, bucketExpr, table, strings.Join(conditions, " and ")), args...)
 	if err != nil {
 		return err
 	}
@@ -909,6 +949,7 @@ func hourlyStatementFromEvents(filter HourlyFilter, fromMS, toMS, afterID int64,
 			args = append(args, modelID)
 		}
 	}
+	conditions, args = appendProviderCondition(conditions, args, filter.Providers, "e.")
 	if !filter.IncludeFailed {
 		conditions = append(conditions, "e.failed = 0")
 	}
@@ -1374,6 +1415,7 @@ func storedHourlyConditions(revision string, filter HourlyFilter, fromMS, toMS i
 			args = append(args, modelID)
 		}
 	}
+	conditions, args = appendProviderCondition(conditions, args, filter.Providers, "")
 	if !filter.IncludeFailed {
 		conditions = append(conditions, "failed = 0")
 	}
@@ -1381,6 +1423,23 @@ func storedHourlyConditions(revision string, filter HourlyFilter, fromMS, toMS i
 		conditions = append(conditions, "failed = 1")
 	}
 	return conditions, args
+}
+
+// appendProviderCondition is the raw analytics provider filter on prefix's provider columns.
+// The provider-keyed table stores both with NULL as the empty string, which is how the
+// filter reads them, so the stored rows it keeps are exactly the rows of the events it keeps.
+func appendProviderCondition(conditions []string, args []any, providers []string, prefix string) ([]string, []any) {
+	values := normalizeValues(providers)
+	if len(values) == 0 {
+		return conditions, args
+	}
+	for index, value := range values {
+		values[index] = strings.ToLower(value)
+	}
+	encoded, _ := json.Marshal(values)
+	conditions = append(conditions, "(lower(coalesce("+prefix+"provider, '')) in (select value from json_each(?))"+
+		" or lower(coalesce("+prefix+"auth_provider_snapshot, '')) in (select value from json_each(?)))")
+	return conditions, append(args, string(encoded), string(encoded))
 }
 
 func normalizeValues(values []string) []string {

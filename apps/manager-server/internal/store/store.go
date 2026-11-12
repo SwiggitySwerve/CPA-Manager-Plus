@@ -683,9 +683,15 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 	if err != nil {
 		return UsageHourlyPricingSnapshot{}, err
 	}
-	pricingRows, pricingState, pricingAvailable, pricingErr := s.UsagePricing.LoadHourlyRowsTx(ctx, tx, pricingFilter)
+	// The core aggregate has no provider, so coverage is checked on the pricing rows of
+	// every provider, read from the table a provider filter will read.
+	coverageFilter := pricingFilter
+	coverageFilter.Providers = nil
+	coverageFilter.ByProvider = hasFilterValue(pricingFilter.Providers)
+	recovered := false
+	pricingRows, pricingState, pricingAvailable, pricingErr := s.UsagePricing.LoadHourlyRowsTx(ctx, tx, coverageFilter)
 	if aggregateAvailable && (pricingErr != nil || !pricingAvailable || !hourlyPricingCoverageMatches(aggregateRows, pricingRows)) {
-		pricingRows, err = s.UsagePricing.LoadHourlyRowsFromEventsTx(ctx, tx, pricingFilter)
+		pricingRows, err = s.UsagePricing.LoadHourlyRowsFromEventsTx(ctx, tx, coverageFilter)
 		if err != nil {
 			if errors.Is(err, ErrUsagePricingCoverageIncomplete) {
 				return UsageHourlyPricingSnapshot{}, err
@@ -696,8 +702,21 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 			return UsageHourlyPricingSnapshot{}, ErrUsagePricingCoverageIncomplete
 		}
 		pricingAvailable = true
+		recovered = true
 	} else if pricingErr != nil {
 		return UsageHourlyPricingSnapshot{}, pricingErr
+	}
+	if coverageFilter.ByProvider && aggregateAvailable && pricingAvailable {
+		// Narrow the source that just passed the check, in the same read transaction.
+		if recovered {
+			pricingRows, err = s.UsagePricing.LoadHourlyRowsFromEventsTx(ctx, tx, pricingFilter)
+		} else {
+			pricingRows, _, _, err = s.UsagePricing.LoadHourlyRowsTx(ctx, tx, pricingFilter)
+		}
+		if err != nil {
+			return UsageHourlyPricingSnapshot{}, err
+		}
+		aggregateRows = hourlyAggregateRowsFromPricing(pricingRows)
 	}
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {

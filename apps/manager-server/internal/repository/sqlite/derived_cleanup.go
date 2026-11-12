@@ -854,7 +854,7 @@ func staleDerivedCleanupTargets(ctx context.Context, db *sql.DB) ([]derivedClean
 		stateName      string
 		revisionColumn string
 	}{
-		{[]string{"usage_pricing_hourly_rollups_v1", usagePricingAccountRollupsTable}, "usage_pricing_rollup_state", "pricing_v1", "structure_revision"},
+		{[]string{"usage_pricing_hourly_rollups_v1", usagePricingHourlyProviderTable, usagePricingAccountRollupsTable}, "usage_pricing_rollup_state", "pricing_v1", "structure_revision"},
 		{[]string{usageMonitoringAccountDailyTable, usageMonitoringAPIKeyDailyTable}, usageMonitoringRollupStateTable, usageMonitoringStatsRollupName, "structure_revision"},
 	} {
 		var activeRevision string

@@ -26,7 +26,7 @@ type AccountWindowUsageQuery = usageevent.AccountWindowUsageQuery
 type AccountWindowModelStat = usageevent.AccountWindowModelStat
 
 func currentStructureRevision(ctx context.Context, db usagepricing.RowQuerier) (string, error) {
-	return usagepricing.StructureRevision(ctx, db)
+	return usagepricing.PriceStructureRevision(ctx, db)
 }
 
 func floorDayMS(value int64) int64 {
